@@ -1,0 +1,28 @@
+services:
+  postgres:
+    # pgvector/pgvector, not the stock postgres image: the hybrid search engine
+    # (issue #11) stores embeddings in a `vector` column, and the `vector`
+    # extension ships only in this image. It's Postgres 16 with pgvector +
+    # pg_trgm preinstalled — otherwise a drop-in replacement.
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: yercaud
+      POSTGRES_PASSWORD: yercaud
+      POSTGRES_DB: yercaud_directory
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # No init mounts (Phase 10). The container starts an empty database and
+      # the backend builds it: `npm run migrate:up` then `npm run seed:reference`.
+      #
+      # docker-entrypoint-initdb.d can't run node-pg-migrate — the Postgres
+      # image has no Node — so keeping a schema mount here would mean two
+      # mechanisms constructing the same schema, which is the drift this
+      # setup exists to prevent. It had already happened: this volume was
+      # three columns behind schema.sql, because init scripts only ever run
+      # against an empty data directory.
+
+volumes:
+  pgdata:

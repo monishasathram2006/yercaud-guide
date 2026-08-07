@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/dist-ssr
+**/.output
+**/.vinxi
+**/.nitro
+**/.tanstack
+**/.git
+**/.env
+**/.env.*
+!**/.env.example
+backend/uploads
+frontend/node_modules
+Admin/node_modules

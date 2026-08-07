@@ -1,0 +1,4267 @@
+openapi: 3.0.3
+info:
+  title: Yercaud Business Directory API
+  version: 0.1.0
+  description: >
+    Backend contract for the public frontend and Admin panel. Auth is
+    httpOnly session cookies (ADR: session cookies over JWT). See
+    /CONTEXT.md and /docs/adr/ for the domain model and design decisions
+    this contract implements.
+servers:
+  - url: http://localhost:4000/v1
+    description: Local dev
+
+security:
+  - cookieAuth: []
+
+tags:
+  - name: Auth
+  - name: Taxonomies
+  - name: Businesses
+  - name: Listings
+  - name: Search
+  - name: Reviews
+  - name: Favorites
+  - name: Enquiries
+  - name: Admin
+  - name: Marketing
+  - name: Featured
+  - name: Blog
+  - name: FAQ
+  - name: Content
+
+paths:
+  # ===========================================================================
+  # Auth
+  # ===========================================================================
+  /auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Create a User account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                name: { type: string }
+      responses:
+        '201':
+          description: Account created, session cookie set
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Start a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Session cookie set
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /me:
+    patch:
+      tags: [Auth]
+      summary: Update the current User's own profile
+      description: >-
+        Added in Phase 10 — nothing let a User edit their own profile.
+        PATCH /users/{userId} is the Super Admin's suspend/reactivate, and /me/*
+        was read-only.
+
+        Self-scoped by construction: it acts on the session's User, so there is no
+        id in the path to tamper with. Email is deliberately not editable — it's
+        the login identity and the unique key, so changing it is an
+        account-recovery flow, not a profile edit. Password has its own reset
+        flow. Roles and status are not self-editable, and are stripped from the
+        body rather than honoured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OwnProfileInput' }
+      responses:
+        '200':
+          description: OK — the same shape as /auth/me, so a client can swap it straight into its cache.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /me/username-available:
+    get:
+      tags: [Auth]
+      summary: Live username-availability check while the User is typing (issue #14)
+      description: >-
+        Advisory only, ahead of a full form submit — PATCH /me is still the
+        source of truth and re-validates on save. Excludes the caller's own
+        current username, so keeping it never reads as taken.
+      parameters:
+        - name: username
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [available]
+                properties:
+                  available: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /me/avatar:
+    post:
+      tags: [Auth]
+      summary: Upload a real profile photo (issue #14), replacing the client's blob:-URL workaround
+      description: >-
+        Reuses the on-disk storage and static-serving approach already used by
+        listing images. JPEG/PNG/WEBP only, 2 MB cap.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Uploaded — same shape as /auth/me, with the new avatarUrl already applied.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /me/stats:
+    get:
+      tags: [Auth]
+      summary: The current User's own activity counts, for the profile page's My Statistics card (issue #13)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enquiries, reviews, favorites, listings]
+                properties:
+                  enquiries: { type: integer }
+                  reviews: { type: integer }
+                  favorites: { type: integer }
+                  listings:
+                    type: integer
+                    description: Listings across all Businesses this User owns — 0 for a non-owner, not omitted.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /me/password:
+    post:
+      tags: [Auth]
+      summary: Change (or, for a Google-only account, set a first) password while signed in — issue #13
+      description: >-
+        Distinct from the forgot-password email/token flow, which is
+        unchanged. currentPassword is required and verified when the account
+        already has one; for a Google-only account (hasPassword: false on
+        CurrentUser) it's ignored, since there's nothing to verify.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newPassword]
+              additionalProperties: false
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8 }
+      responses:
+        '204': { description: Password changed }
+        '401': { description: Not signed in, or currentPassword missing/incorrect when one is required }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Invalidate the current session
+      responses:
+        '204': { description: Logged out }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current session's User, with roles and effective permissions
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # Phase 6: not in the original Phase 0.5 contract — POST /users/{userId}/impersonate
+  # starts a session but nothing stops it. Self-scoped: exits whatever
+  # impersonation session the caller is currently on.
+  /auth/exit-impersonation:
+    post:
+      tags: [Auth]
+      summary: Exit an active impersonation session, restoring the admin's own session (FR160)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /auth/password-reset/request:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Send a password reset email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        '202': { description: Reset email queued if the account exists }
+
+  /auth/password-reset/confirm:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Complete a password reset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 8 }
+      responses:
+        '204': { description: Password updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  # ===========================================================================
+  # Taxonomies (Super Admin write, public read)
+  # ===========================================================================
+  /categories:
+    get:
+      tags: [Taxonomies]
+      security: []
+      summary: List categories
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Category' }
+    post:
+      tags: [Taxonomies]
+      summary: Create a category (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoryInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /categories/{categoryId}:
+    parameters:
+      - $ref: '#/components/parameters/CategoryId'
+    patch:
+      tags: [Taxonomies]
+      summary: Update a category (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoryInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+    delete:
+      tags: [Taxonomies]
+      summary: Delete a category (Super Admin; blocked while Listings reference it — ADR 0009)
+      responses:
+        '204': { description: Deleted }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /categories/{categoryId}/attributes:
+    parameters:
+      - $ref: '#/components/parameters/CategoryId'
+    get:
+      tags: [Taxonomies]
+      security: []
+      summary: List a category's dynamic attribute definitions (ADR 0004)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CategoryAttribute' }
+    post:
+      tags: [Taxonomies]
+      summary: Add a dynamic attribute to a category (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoryAttributeInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryAttribute' }
+
+  /categories/{categoryId}/attributes/{attributeId}:
+    parameters:
+      - $ref: '#/components/parameters/CategoryId'
+      - name: attributeId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Taxonomies]
+      summary: Update a category's dynamic attribute definition (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoryAttributeInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryAttribute' }
+    delete:
+      tags: [Taxonomies]
+      summary: Remove a dynamic attribute definition (Super Admin); Listings' stored values for it are removed via cascade
+      responses:
+        '204': { description: Deleted }
+
+  /locations:
+    get:
+      tags: [Taxonomies]
+      security: []
+      summary: List locations (flat, Yercaud-only — CONTEXT.md)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NamedLookup' }
+    post:
+      tags: [Taxonomies]
+      summary: Create a location (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NamedLookup' }
+
+  /locations/{locationId}:
+    parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Taxonomies]
+      summary: Update a location (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NamedLookup' }
+    delete:
+      tags: [Taxonomies]
+      summary: Delete a location (Super Admin); Listings referencing it have location_id set to null (ADR 0009)
+      responses:
+        '204': { description: Deleted }
+
+  /amenities:
+    get:
+      tags: [Taxonomies]
+      security: []
+      summary: List amenities
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NamedLookup' }
+    post:
+      tags: [Taxonomies]
+      summary: Create an amenity (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '201': { description: Created }
+
+  /attribute-tags:
+    get:
+      tags: [Taxonomies]
+      security: []
+      summary: List attribute tags
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NamedLookup' }
+    post:
+      tags: [Taxonomies]
+      summary: Create an attribute tag (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '201': { description: Created }
+
+  /attribute-tags/{tagId}:
+    parameters:
+      - name: tagId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Taxonomies]
+      summary: Update an attribute tag (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '200': { description: OK }
+    delete:
+      tags: [Taxonomies]
+      summary: Delete an attribute tag (Super Admin); removed from any Listings via cascade
+      responses:
+        '204': { description: Deleted }
+
+  /property-types:
+    get:
+      tags: [Taxonomies]
+      security: []
+      summary: List Hotel property types
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NamedLookup' }
+    post:
+      tags: [Taxonomies]
+      summary: Create a property type (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '201': { description: Created }
+
+  /property-types/{propertyTypeId}:
+    parameters:
+      - name: propertyTypeId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Taxonomies]
+      summary: Update a property type (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '200': { description: OK }
+    delete:
+      tags: [Taxonomies]
+      summary: Delete a property type (Super Admin); Hotel details referencing it have property_type_id set to null (ADR 0009)
+      responses:
+        '204': { description: Deleted }
+
+  /languages:
+    get:
+      tags: [Taxonomies]
+      security: []
+      summary: List spoken languages
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NamedLookup' }
+    post:
+      tags: [Taxonomies]
+      summary: Create a language (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '201': { description: Created }
+
+  /languages/{languageId}:
+    parameters:
+      - name: languageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Taxonomies]
+      summary: Update a language (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '200': { description: OK }
+    delete:
+      tags: [Taxonomies]
+      summary: Delete a language (Super Admin); removed from any Hotel/Tour listings via cascade
+      responses:
+        '204': { description: Deleted }
+
+  /badges:
+    get:
+      tags: [Taxonomies]
+      security: []
+      summary: List promotional badges (public — the directory styles badges from this)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Badge' }
+    post:
+      tags: [Taxonomies]
+      summary: Create a badge (Super Admin — guarded by Categories, like every other master taxonomy)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BadgeInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Badge' }
+
+  /badges/{badgeId}:
+    parameters:
+      - name: badgeId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Taxonomies]
+      summary: Update a badge (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BadgeInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Badge' }
+    delete:
+      tags: [Taxonomies]
+      summary: Delete a badge (Super Admin) — Listings wearing it keep it as null, not deleted
+      responses:
+        '204': { description: Deleted }
+
+  /price-bands:
+    get:
+      tags: [Taxonomies]
+      security: []
+      summary: List price bands
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PriceBand' }
+    post:
+      tags: [Taxonomies]
+      summary: Create a price band (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PriceBand' }
+      responses:
+        '201': { description: Created }
+
+  /price-bands/{priceBandId}:
+    parameters:
+      - name: priceBandId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Taxonomies]
+      summary: Update a price band (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PriceBand' }
+      responses:
+        '200': { description: OK }
+    delete:
+      tags: [Taxonomies]
+      summary: Delete a price band (Super Admin)
+      responses:
+        '204': { description: Deleted }
+
+  # ===========================================================================
+  # Businesses
+  # ===========================================================================
+  /businesses:
+    get:
+      tags: [Businesses]
+      summary: List businesses (Super Admin sees all; Business Owner sees own)
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ApprovalStatus' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Business' }
+    post:
+      tags: [Businesses]
+      summary: Apply as a Business Owner (FR161) — starts as 'pending'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BusinessInput' }
+      responses:
+        '201':
+          description: Created, pending Super Admin approval
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Business' }
+
+  /businesses/{businessId}:
+    parameters:
+      - $ref: '#/components/parameters/BusinessId'
+    get:
+      tags: [Businesses]
+      security: []
+      summary: Get a Business — public once approved, owner/admin only before that
+      description: >-
+        An approved Business is readable by anyone: the public Listing page shows
+        its address, email and social links, and a directory whose businesses
+        can't be read is not a directory. (Phone and website were already public,
+        riding along on ListingSummary — the old rule wasn't self-consistent.)
+
+        Anything not yet approved keeps the previous rule exactly: 401 when not
+        signed in, 403 when signed in without ownership or Businesses:view. Not
+        404 — Phase 1 chose that distinction deliberately, and Business ids are
+        UUIDs, so the enumeration argument that justifies 404 for Listings
+        doesn't apply.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Business' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Businesses]
+      summary: Update a business (owner or Super Admin) — applies immediately, ADR 0005
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BusinessInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Business' }
+
+  /businesses/{businessId}/approve:
+    parameters: [{ $ref: '#/components/parameters/BusinessId' }]
+    post:
+      tags: [Businesses]
+      summary: Approve a pending business (Super Admin)
+      responses:
+        '200': { description: Approved }
+
+  /businesses/{businessId}/reject:
+    parameters: [{ $ref: '#/components/parameters/BusinessId' }]
+    post:
+      tags: [Businesses]
+      summary: Reject a pending business (Super Admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string } }
+      responses:
+        '200': { description: Rejected }
+
+  /businesses/{businessId}/suspend:
+    parameters: [{ $ref: '#/components/parameters/BusinessId' }]
+    post:
+      tags: [Businesses]
+      summary: Suspend a business for policy violation (Super Admin)
+      responses:
+        '200': { description: Suspended }
+
+  /businesses/{businessId}/archive:
+    parameters: [{ $ref: '#/components/parameters/BusinessId' }]
+    post:
+      tags: [Businesses]
+      summary: Archive a business — history kept, hidden from public site (ADR 0010)
+      responses:
+        '200': { description: Archived }
+
+  /businesses/{businessId}/staff:
+    parameters: [{ $ref: '#/components/parameters/BusinessId' }]
+    get:
+      tags: [Businesses]
+      summary: List staff invited to this business (FR163)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/BusinessStaff' }
+    post:
+      tags: [Businesses]
+      summary: Invite a staff member (owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                permissions:
+                  type: object
+                  additionalProperties: { type: boolean }
+      responses:
+        '201': { description: Invited }
+
+  /businesses/{businessId}/staff/{staffId}:
+    parameters:
+      - $ref: '#/components/parameters/BusinessId'
+      - name: staffId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Businesses]
+      summary: Update a staff member's permissions or status (owner)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [pending, accepted, revoked] }
+                permissions:
+                  type: object
+                  additionalProperties: { type: boolean }
+      responses:
+        '200': { description: Updated }
+    delete:
+      tags: [Businesses]
+      summary: Revoke a staff member (owner)
+      responses:
+        '204': { description: Revoked }
+
+  # ===========================================================================
+  # Search
+  # ===========================================================================
+  /search:
+    get:
+      tags: [Search]
+      security: []
+      summary: Hybrid search over Listings and Businesses (issue #11)
+      description: >-
+        The public directory search. Fuses a lexical leg (weighted full-text with
+        typo/prefix tolerance) and a semantic leg (embedding similarity) with
+        Reciprocal Rank Fusion. Results are grouped, Listings primary — a visitor
+        lands on a Listing they can enquire about, with the owning Business
+        reachable alongside.
+
+
+        Visibility follows the same rule as GET /listings: anonymous callers see
+        only 'approved'; a signed-in Business Owner also sees their own pending
+        Listings/Businesses. The semantic leg is best-effort — if embeddings are
+        unconfigured or the query embedding can't be produced in time, results
+        come back on the lexical leg alone.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: The search phrase. Required — an empty search has no meaning here.
+          schema: { type: string, minLength: 1 }
+        - name: category
+          in: query
+          description: >-
+            Category slug. Scopes the Listings group to one category (a category
+            page's hero box); the Businesses group is unaffected.
+          schema: { type: string }
+        - name: mode
+          in: query
+          description: >-
+            'quick' runs the lexical leg only — no embedding call — for the
+            instant type-ahead dropdown, where per-keystroke latency and cost
+            matter. Omit (the default, 'full') for the submitted-search results
+            page, which runs the full hybrid ranking.
+          schema: { type: string, enum: [full, quick], default: full }
+        - name: pageSize
+          in: query
+          description: Max results per group.
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [listings, businesses]
+                properties:
+                  listings:
+                    type: array
+                    items: { $ref: '#/components/schemas/ListingSummary' }
+                  businesses:
+                    type: array
+                    items: { $ref: '#/components/schemas/BusinessSummary' }
+
+  # ===========================================================================
+  # Listings
+  # ===========================================================================
+  /listings:
+    get:
+      tags: [Listings]
+      security: []
+      summary: Search/browse Listings (public — only 'approved' are visible to anonymous callers)
+      parameters:
+        - name: q
+          in: query
+          description: >-
+            Free-text search. Shares the lexical leg of the search engine (issue
+            #11): weighted full-text with typo/prefix tolerance, ordered by
+            relevance rather than recency. (The semantic leg and its Businesses
+            group live on GET /search; this stays lexical so browse stays a single
+            query.) Combine with the filters below to search within a slice.
+          schema: { type: string }
+        - name: category
+          in: query
+          schema: { type: string, description: category slug }
+        - name: location
+          in: query
+          schema: { type: string, description: location slug }
+        - name: businessId
+          in: query
+          description: >-
+            Scope to one Business's Listings — the Admin panel's "My Listings"
+            view. A UUID, not a slug: the caller already holds the Business row.
+            Visibility rules still apply, so a stranger scoping to someone
+            else's Business sees only its approved Listings.
+          schema: { type: string, format: uuid }
+        - name: minRating
+          in: query
+          schema: { type: number }
+        - name: priceBand
+          in: query
+          description: >-
+            Price band label (price_bands has no slug). Matched as a range against
+            the Listing's priceFrom, using the band's min/max amounts — there is no
+            FK from listings to price_bands. Listings with no price are excluded.
+          schema: { type: string }
+        - name: minPrice
+          in: query
+          description: FR21's Price Range filter / FR28's per-night slider. Excludes Listings with no price.
+          schema: { type: integer, minimum: 0 }
+        - name: maxPrice
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: amenities
+          in: query
+          description: >-
+            Comma-separated amenity names. AND semantics — a Listing must carry
+            every named amenity to match.
+          schema: { type: string }
+        - name: minStarRating
+          in: query
+          description: hotel_details.star_rating — only Hotel Listings have a row to match against.
+          schema: { type: integer, minimum: 1, maximum: 5 }
+        - name: propertyType
+          in: query
+          description: Property type name (property_types has no slug), Hotel Listings only.
+          schema: { type: string }
+        - name: status
+          in: query
+          description: Admin/owner callers only
+          schema: { $ref: '#/components/schemas/ApprovalStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ListingSummary' }
+                  total: { type: integer }
+    post:
+      tags: [Listings]
+      summary: Create a Listing under one of the caller's Businesses
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ListingInput' }
+      responses:
+        '201':
+          description: Created — every new Listing starts pending, gated on its own first-publish approval (ADR 0005)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Listing' }
+
+  /listings/{listingId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+    get:
+      tags: [Listings]
+      security: []
+      summary: Get a Listing with its category-specific details
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Listing' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Listings]
+      summary: Update a Listing — applies immediately once first-published (ADR 0005)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ListingInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Listing' }
+
+  /listings/by-slug/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Listings]
+      security: []
+      summary: Get a Listing by its slug (the public site's URL shape)
+      description: >-
+        The public site addresses Listings by slug — readable, keyword-bearing,
+        and what the server-rendered pages link to. Admin keeps using ids. A
+        separate path rather than overloading {listingId}, so a slug that happens
+        to look like a UUID is never ambiguous. Same visibility rule as fetching
+        by id: an unapproved Listing 404s to anyone but its owner or an admin.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Listing' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /listings/{listingId}/badge:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    put:
+      tags: [Listings]
+      summary: Set or clear a Listing's promotional badge (FR30 — Marketing:edit, i.e. Super Admin)
+      description: >-
+        Deliberately not a ListingInput field. Badging is a marketing act, and a
+        Business Owner self-labelling as "Popular" would make the badge
+        meaningless — so the permission states the rule rather than the service
+        special-casing a field owners may not write. Pass null to clear.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [badgeId]
+              properties:
+                badgeId: { type: string, format: uuid, nullable: true }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Listing' }
+
+  /listings/{listingId}/stats:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    get:
+      tags: [Listings]
+      summary: A Business Owner's own View/Favorite/Contact-Reveal/Enquiry counts and Featured/Sponsored status (issue #24)
+      description: >-
+        Owner-or-permission gated, same as every other owner-scoped Listing
+        sub-resource (Listings:edit). Lets an owner see what's actually
+        driving (or not driving) their Listing's Featured eligibility (#17,
+        #19) without exposing it to anyone else.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListingStats' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /listings/{listingId}/approve:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Approve a Listing's first publish (Super Admin)
+      responses:
+        '200': { description: Approved }
+
+  /listings/{listingId}/reject:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Reject a Listing (Super Admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string } }
+      responses:
+        '200': { description: Rejected }
+
+  /listings/{listingId}/archive:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Archive a Listing — history kept (ADR 0010)
+      responses:
+        '200': { description: Archived }
+
+  /listings/{listingId}/images:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Upload a Listing image (stored on local disk, see build plan)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+                caption: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListingImage' }
+
+  /listings/{listingId}/images/{imageId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+      - name: imageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [Listings]
+      summary: Remove a Listing image
+      responses:
+        '204': { description: Deleted }
+
+  /listings/{listingId}/amenities:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    put:
+      tags: [Listings]
+      summary: Replace a Listing's amenity set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amenityIds]
+              properties:
+                amenityIds: { type: array, items: { type: string, format: uuid } }
+      responses:
+        '200': { description: Updated }
+
+  /listings/{listingId}/tags:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    put:
+      tags: [Listings]
+      summary: Replace a Listing's attribute-tag set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tagIds]
+              properties:
+                tagIds: { type: array, items: { type: string, format: uuid } }
+      responses:
+        '200': { description: Updated }
+
+  /listings/{listingId}/attributes:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    put:
+      tags: [Listings]
+      summary: Set the Listing's dynamic attribute values (ADR 0004; validated server-side against field_type — DB trigger is the backstop)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: { type: string }
+              description: categoryAttributeId -> value
+      responses:
+        '200': { description: Updated }
+
+  /listings/{listingId}/hotel-details:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    get:
+      tags: [Listings]
+      security: []
+      summary: Get Hotel-specific details (rooms, availability blocks, languages)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelDetails' }
+    put:
+      tags: [Listings]
+      summary: Create/update Hotel-specific details
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HotelDetailsInput' }
+      responses:
+        '200': { description: Updated }
+
+  /listings/{listingId}/restaurant-details:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    get:
+      tags: [Listings]
+      security: []
+      summary: Get Restaurant-specific details (opening hours, menu items)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RestaurantDetails' }
+    put:
+      tags: [Listings]
+      summary: Create/update Restaurant-specific details
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RestaurantDetailsInput' }
+      responses:
+        '200': { description: Updated }
+
+  /listings/{listingId}/activity-details:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    get:
+      tags: [Listings]
+      security: []
+      summary: Get Activity-specific details (itinerary, inclusions)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActivityDetails' }
+    put:
+      tags: [Listings]
+      summary: Create/update Activity-specific details
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ActivityDetailsInput' }
+      responses:
+        '200': { description: Updated }
+
+  /listings/{listingId}/tour-details:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    get:
+      tags: [Listings]
+      security: []
+      summary: Get Tour & Travel-specific details (itinerary, inclusions, attractions, languages)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TourDetails' }
+    put:
+      tags: [Listings]
+      summary: Create/update Tour & Travel-specific details
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TourDetailsInput' }
+      responses:
+        '200': { description: Updated }
+
+  # ---------------------------------------------------------------------------
+  # Child collections under each category-detail module — added in Phase 4
+  # beyond the original Phase 0.5 contract, since HotelDetailsInput/
+  # RestaurantDetailsInput/ActivityDetailsInput/TourDetailsInput only carry
+  # scalar fields; these give the nested rooms/menu items/itinerary
+  # steps/inclusions/attractions their own CRUD (see Phase 4 spec).
+  # ---------------------------------------------------------------------------
+  /listings/{listingId}/hotel-details/rooms:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Add a Hotel room (requires Hotel details to exist first)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HotelRoomInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelRoom' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/hotel-details/rooms/{roomId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+      - name: roomId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Listings]
+      summary: Update a Hotel room
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HotelRoomInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelRoom' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Listings]
+      summary: Remove a Hotel room
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /listings/{listingId}/hotel-details/availability-blocks:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Add a Hotel availability block (requires Hotel details to exist first)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HotelAvailabilityBlockInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelAvailabilityBlock' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/hotel-details/availability-blocks/{blockId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+      - name: blockId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Listings]
+      summary: Update a Hotel availability block
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HotelAvailabilityBlockInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelAvailabilityBlock' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Listings]
+      summary: Remove a Hotel availability block
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /listings/{listingId}/restaurant-details/opening-hours:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    put:
+      tags: [Listings]
+      summary: Replace all 7 days of opening hours in one call (requires Restaurant details to exist first)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 7
+              maxItems: 7
+              items: { $ref: '#/components/schemas/OpeningHour' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/OpeningHour' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/restaurant-details/menu-items:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Add a menu item (requires Restaurant details to exist first)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MenuItemInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MenuItem' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/restaurant-details/menu-items/{itemId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+      - name: itemId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Listings]
+      summary: Update a menu item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MenuItemInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MenuItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Listings]
+      summary: Remove a menu item
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /listings/{listingId}/activity-details/itinerary-steps:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Add an Activity itinerary step (requires Activity details to exist first)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ItineraryStepInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryStep' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/activity-details/itinerary-steps/{stepId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+      - name: stepId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Listings]
+      summary: Update an Activity itinerary step
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ItineraryStepInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryStep' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Listings]
+      summary: Remove an Activity itinerary step
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /listings/{listingId}/activity-details/inclusions:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Add an Activity inclusion/exclusion item (requires Activity details to exist first)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InclusionInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Inclusion' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/activity-details/inclusions/{inclusionId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+      - name: inclusionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Listings]
+      summary: Update an Activity inclusion/exclusion item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InclusionInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Inclusion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Listings]
+      summary: Remove an Activity inclusion/exclusion item
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /listings/{listingId}/tour-details/itinerary-steps:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Add a Tour itinerary step (requires Tour & Travel details to exist first)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ItineraryStepInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryStep' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/tour-details/itinerary-steps/{stepId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+      - name: stepId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Listings]
+      summary: Update a Tour itinerary step
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ItineraryStepInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryStep' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Listings]
+      summary: Remove a Tour itinerary step
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /listings/{listingId}/tour-details/inclusions:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Add a Tour inclusion/exclusion item (requires Tour & Travel details to exist first)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InclusionInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Inclusion' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/tour-details/inclusions/{inclusionId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+      - name: inclusionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Listings]
+      summary: Update a Tour inclusion/exclusion item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InclusionInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Inclusion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Listings]
+      summary: Remove a Tour inclusion/exclusion item
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /listings/{listingId}/tour-details/attractions:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Add a named Tour attraction (requires Tour & Travel details to exist first)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TourAttractionInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TourAttraction' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/tour-details/attractions/{attractionId}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+      - name: attractionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Listings]
+      summary: Update a named Tour attraction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TourAttractionInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TourAttraction' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Listings]
+      summary: Remove a named Tour attraction
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===========================================================================
+  # Reviews
+  # ===========================================================================
+  /listings/{listingId}/reviews:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    get:
+      tags: [Reviews]
+      security: []
+      summary: List a Listing's approved Reviews (public)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Review' }
+    post:
+      tags: [Reviews]
+      summary: Submit a Review — starts 'pending' (ADR 0006), one per User per Listing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating, text]
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                text: { type: string }
+      responses:
+        '201':
+          description: Created, pending approval
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Review' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /listings/{listingId}/similar:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    get:
+      tags: [Listings]
+      security: []
+      summary: List other Listings similar to this one (same Category, nearest by content embedding)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ListingSummary' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /reviews:
+    get:
+      tags: [Reviews]
+      summary: List Reviews across all statuses (Super Admin moderation queue)
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, approved, rejected] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Review' }
+
+  /me/reviews:
+    get:
+      tags: [Reviews]
+      summary: Every Review the current User has written, all statuses, joined with each Listing's summary (issue #13)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Review' }
+
+  # Phase 5: not in the original Phase 0.5 contract — the author's own edit
+  # path, self-scoped (not requireOwnerOrPermission; "owner" of a Review is
+  # its author, not a Business owner). Resets status to 'pending' (ADR 0006).
+  /reviews/{reviewId}:
+    parameters: [{ $ref: '#/components/parameters/ReviewId' }]
+    patch:
+      tags: [Reviews]
+      summary: Edit your own Review — resets it to 'pending' for re-moderation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating, text]
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                text: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Review' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /reviews/{reviewId}/approve:
+    parameters: [{ $ref: '#/components/parameters/ReviewId' }]
+    post:
+      tags: [Reviews]
+      summary: Approve a pending Review (Super Admin)
+      responses:
+        '200': { description: Approved }
+
+  /reviews/{reviewId}/reject:
+    parameters: [{ $ref: '#/components/parameters/ReviewId' }]
+    post:
+      tags: [Reviews]
+      summary: Reject a pending Review (Super Admin)
+      responses:
+        '200': { description: Rejected }
+
+  /reviews/{reviewId}/reply:
+    parameters: [{ $ref: '#/components/parameters/ReviewId' }]
+    post:
+      tags: [Reviews]
+      summary: Business Owner replies to an approved Review
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties: { text: { type: string } }
+      responses:
+        '200': { description: Reply added }
+
+  /reviews/{reviewId}/report:
+    parameters: [{ $ref: '#/components/parameters/ReviewId' }]
+    post:
+      tags: [Reviews]
+      summary: Report a Review as abusive/fraudulent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string } }
+      responses:
+        '201': { description: Report filed }
+
+  # ===========================================================================
+  # Favorites
+  # ===========================================================================
+  /me/favorites:
+    get:
+      tags: [Favorites]
+      summary: List the current User's Favorites, grouped by category
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ListingSummary' }
+
+  /listings/{listingId}/favorite:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Favorites]
+      summary: Favorite a Listing
+      responses:
+        '204': { description: Favorited }
+    delete:
+      tags: [Favorites]
+      summary: Un-favorite a Listing
+      responses:
+        '204': { description: Removed }
+
+  /listings/{listingId}/contact-reveal:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Log that a signed-in visitor actually saw this Listing's real contact info (issue #15)
+      description: >-
+        The write side of the contact-info gate: a signed-out visitor sees
+        phone/email/website/address blurred behind a sign-in prompt, and the
+        frontend calls this once it renders the real values to a signed-in
+        visitor on the Listing's detail page (not from a search/grid card,
+        which is browsing rather than intent).
+
+        Fire-and-forget by design — always 204, deduped server-side per
+        (Listing, User) per calendar day, and silently skipped when the
+        caller owns or staffs the Business behind this Listing (not a lead).
+        Write-only for now; there's no read/reporting endpoint yet.
+      responses:
+        '204': { description: Logged (or silently skipped/deduped) }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /listings/{listingId}/view:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Listings]
+      summary: Record an anonymous-friendly page View of this Listing's detail page (issue #16)
+      security: []
+      description: >-
+        Called once per mount of a Listing's detail page, whether or not the
+        visitor is signed in — most directory traffic is anonymous. The
+        backend reads the caller's visitor_id cookie (minting one if absent)
+        as the dedup key, fire-and-forget by design — always 204, deduped
+        server-side per (Listing, visitor session) per calendar day, and
+        silently skipped when the caller owns or staffs the Business behind
+        this Listing. Write-only for now; there's no read/reporting endpoint
+        yet (feeds Featured Score, see #15).
+      responses:
+        '204': { description: Recorded (or silently skipped/deduped) }
+
+  # ===========================================================================
+  # Enquiries (sole conversion mechanism — ADR 0001)
+  # ===========================================================================
+  /listings/{listingId}/enquiries:
+    parameters: [{ $ref: '#/components/parameters/ListingId' }]
+    post:
+      tags: [Enquiries]
+      security: []
+      summary: Submit an Enquiry — signed-in optional (ADR 0001, 0008)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, message]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                message: { type: string }
+      responses:
+        '201':
+          description: Created; SMS delivery queued when Fast2SMS is wired up (ADR 0008)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Enquiry' }
+
+  /me/enquiries:
+    get:
+      tags: [Enquiries]
+      summary: Enquiries the current User has sent (FR89)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Enquiry' }
+
+  /enquiries:
+    get:
+      tags: [Enquiries]
+      summary: Enquiries inbox (Business Owner sees own Listings' Enquiries; Super Admin sees all)
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [sent, responded, closed] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Enquiry' }
+
+  /enquiries/{enquiryId}/respond:
+    parameters: [{ $ref: '#/components/parameters/EnquiryId' }]
+    post:
+      tags: [Enquiries]
+      summary: Business Owner responds to an Enquiry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties: { text: { type: string } }
+      responses:
+        '200': { description: Responded }
+
+  /enquiries/{enquiryId}/status:
+    parameters: [{ $ref: '#/components/parameters/EnquiryId' }]
+    patch:
+      tags: [Enquiries]
+      summary: Update an Enquiry's status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties: { status: { type: string, enum: [sent, responded, closed] } }
+      responses:
+        '200': { description: Updated }
+
+  # ===========================================================================
+  # Admin (RBAC, moderation, audit, dashboards)
+  # ===========================================================================
+  /admin/approval-queue:
+    get:
+      tags: [Admin]
+      summary: Unified pending queue (Businesses, Listings, Reviews, Blog Comments)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ApprovalQueueItem' }
+
+  /admin/dashboard:
+    get:
+      tags: [Admin]
+      summary: KPI dashboard — scoped to caller's role (Super Admin platform-wide, Business Owner own listings)
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardKpis' }
+
+  /audit-logs:
+    get:
+      tags: [Admin]
+      summary: Privileged action history (Super Admin, FR162)
+      parameters:
+        - name: tableName
+          in: query
+          schema: { type: string }
+        - name: recordId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditLogEntry' }
+
+  /roles:
+    get:
+      tags: [Admin]
+      summary: List roles
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Role' }
+    post:
+      tags: [Admin]
+      summary: Create a custom role (Super Admin, FR159)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        '201': { description: Created }
+
+  /roles/{roleId}/permissions:
+    parameters:
+      - name: roleId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [Admin]
+      summary: Set a role's per-module permissions (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Permission' }
+      responses:
+        '200': { description: Updated }
+
+  /users:
+    get:
+      tags: [Admin]
+      summary: List/search Users (Super Admin)
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, suspended, deleted] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/User' }
+
+  /users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Admin]
+      summary: Suspend/reactivate a User (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties: { status: { type: string, enum: [active, suspended] } }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+    delete:
+      tags: [Admin]
+      summary: Delete a User's own account (self, or Super Admin) — hard delete; downstream effects follow the ON DELETE policy in ADR 0009
+      responses:
+        '204': { description: Deleted }
+
+  /users/{userId}/roles:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [Admin]
+      summary: Assign roles to a User (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roleIds]
+              properties:
+                roleIds: { type: array, items: { type: string, format: uuid } }
+      responses:
+        '200': { description: Updated }
+
+  /users/{userId}/impersonate:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Admin]
+      summary: Super Admin "view as" a Business Owner (FR160) — recorded in audit log
+      responses:
+        '200':
+          description: Impersonation session started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ===========================================================================
+  # Marketing
+  # ===========================================================================
+  /promotions:
+    get:
+      tags: [Marketing]
+      security: []
+      summary: >-
+        List promotions. Anonymous callers see only active, in-date-range ones;
+        a signed-in caller also sees every status on their own Listings;
+        Marketing:view (Super Admin) sees everything.
+      parameters:
+        - name: listingId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Promotion' }
+    post:
+      tags: [Marketing]
+      summary: Create a promotion on the caller's own Listing — always starts as 'draft' (see PATCH for the approval flow)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromotionInput' }
+      responses:
+        '201':
+          description: Created as draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # Phase 7: the original Phase 0.5 contract had only list+create for all three
+  # Marketing resources. These per-resource paths add the rest of real CRUD,
+  # and give Promotions the approval flow its own POST summary promised
+  # ("subject to approval where required") but never wired up.
+  /promotions/{promotionId}:
+    parameters: [{ $ref: '#/components/parameters/PromotionId' }]
+    get:
+      tags: [Marketing]
+      security: []
+      summary: Get one promotion (404 unless publicly visible, or you own it / hold Marketing:view)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Marketing]
+      summary: >-
+        Update a promotion. Owners may edit fields and submit for review
+        (draft -> pending); only Marketing:edit (Super Admin) may approve
+        (pending -> active) or send back for changes (pending -> draft).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromotionUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Marketing]
+      summary: Delete a promotion (hard delete — a cancelled campaign keeps no history worth retaining)
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /featured-listings:
+    get:
+      tags: [Marketing]
+      security: []
+      summary: List currently-featured Listings (within their date range), in curated sort order
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FeaturedListing' }
+    post:
+      tags: [Marketing]
+      summary: Feature a Listing (Super Admin) — purely editorial, no owner branch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FeaturedListingInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeaturedListing' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /featured-listings/{featuredId}:
+    parameters:
+      - name: featuredId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Marketing]
+      summary: Update a feature's schedule or sort order (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FeaturedListingUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeaturedListing' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Marketing]
+      summary: Remove a feature placement (Super Admin)
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /banners:
+    get:
+      tags: [Marketing]
+      security: []
+      summary: List active banners (status 'active' AND within any date bounds), in sort order
+      parameters:
+        - name: placement
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Banner' }
+    post:
+      tags: [Marketing]
+      summary: Create a banner (Super Admin) — defaults to 'draft'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BannerInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Banner' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /banners/{bannerId}:
+    parameters:
+      - name: bannerId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Marketing]
+      summary: Update a banner (Super Admin) — partial; send only what changes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BannerUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Banner' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Marketing]
+      summary: Remove a banner (Super Admin)
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===========================================================================
+  # Platform Stats — the home page's real stat tiles
+  # ===========================================================================
+  /platform-stats:
+    get:
+      tags: [Content]
+      summary: Real platform-wide counts for the home page's stat tiles
+      security: []
+      description: >-
+        Replaces the home page's previously-hardcoded stat tiles. "Enquiries
+        Sent" stands in for a "Happy Travelers" metric this platform has no
+        real equivalent for (no bookings/traveler concept — ADR-0001).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformStats' }
+
+  # ===========================================================================
+  # Featured Sections (issue #19, #15) — precomputed, not live-aggregated
+  # ===========================================================================
+  /featured-sections:
+    get:
+      tags: [Featured]
+      summary: The home page's Featured shelves, precomputed by the daily ranking job
+      security: []
+      description: >-
+        Reads only the featured_rankings table written by the daily
+        Featured-ranking job (scripts/featured-ranking-sync.ts) — never
+        aggregates rating/interaction signals live. Each item is full Listing
+        summary data, flagged `sponsored` (issue #22) — true for a paid
+        Sponsored placement, false for an organically-ranked item.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeaturedSections' }
+
+  # ===========================================================================
+  # Blog
+  # ===========================================================================
+  /blog-categories:
+    get:
+      tags: [Blog]
+      security: []
+      summary: List blog categories
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NamedLookup' }
+    post:
+      tags: [Blog]
+      summary: Create a blog category (Super Admin) — slug generated from the name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NamedLookup' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # Phase 8: the original contract had list+create only for blog categories,
+  # FAQ categories, and FAQs. These per-resource paths add the rest.
+  /blog-categories/{categoryId}:
+    parameters: [{ $ref: '#/components/parameters/CategoryId' }]
+    patch:
+      tags: [Blog]
+      summary: Rename a blog category (Super Admin) — re-slugs from the new name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NamedLookupInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NamedLookup' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Blog]
+      summary: Delete a blog category (Super Admin) — 409 if it still has posts (ADR 0009 RESTRICT)
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /blog-posts:
+    get:
+      tags: [Blog]
+      security: []
+      summary: List/search blog posts, newest-first (public sees 'published' only)
+      parameters:
+        - name: q
+          in: query
+          description: Case-insensitive substring match over title, excerpt, and body.
+          schema: { type: string }
+        - name: category
+          in: query
+          description: >-
+            The blog category's slug (unlike GET /faqs' `category`, which takes
+            a UUID — FAQ categories have no slug).
+          schema: { type: string }
+        - name: status
+          in: query
+          description: Admin callers only
+          schema: { type: string, enum: [draft, pending, published] }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/BlogPostSummary' }
+    post:
+      tags: [Blog]
+      summary: Create a blog post (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlogPostInput' }
+      responses:
+        '201': { description: Created as draft }
+
+  /blog-posts/{postId}:
+    parameters:
+      - $ref: '#/components/parameters/PostId'
+    get:
+      tags: [Blog]
+      security: []
+      summary: Get a blog post
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+    patch:
+      tags: [Blog]
+      summary: Update a blog post (Super Admin) — partial; send only what changes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlogPostUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Blog]
+      summary: Delete a blog post (Super Admin) — cascades to its comments and ratings
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /blog-posts/{postId}/publish:
+    parameters: [{ $ref: '#/components/parameters/PostId' }]
+    post:
+      tags: [Blog]
+      summary: >-
+        Publish a blog post (Super Admin). Stamps publishedAt on the first
+        publish only — re-publishing an edited post must not reorder the
+        reader-facing feed, and is a no-op if it's already published.
+      responses:
+        '200':
+          description: Published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /blog-posts/{postId}/comments:
+    parameters: [{ $ref: '#/components/parameters/PostId' }]
+    get:
+      tags: [Blog]
+      security: []
+      summary: List a post's approved comments
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/BlogComment' }
+    post:
+      tags: [Blog]
+      summary: Post a comment — starts 'pending' (same moderation shape as Review)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties: { body: { type: string } }
+      responses:
+        '201': { description: "Created, pending approval" }
+
+  # Phase 8: the cross-post moderation queue, mirroring GET /reviews.
+  /blog-comments:
+    get:
+      tags: [Blog]
+      summary: List comments across all posts and statuses (Super Admin moderation queue)
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, approved, rejected] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/BlogComment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /blog-comments/{commentId}/approve:
+    parameters: [{ $ref: '#/components/parameters/CommentId' }]
+    post:
+      tags: [Blog]
+      summary: Approve a pending comment (Super Admin)
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogComment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # Phase 8: blog_comments.status has a 'rejected' value the contract gave no
+  # way to reach.
+  /blog-comments/{commentId}/reject:
+    parameters: [{ $ref: '#/components/parameters/CommentId' }]
+    post:
+      tags: [Blog]
+      summary: Reject a pending comment (Super Admin)
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogComment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /blog-posts/{postId}/rating:
+    parameters: [{ $ref: '#/components/parameters/PostId' }]
+    put:
+      tags: [Blog]
+      summary: Rate an article (1-5, one per User per Post)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties: { rating: { type: integer, minimum: 1, maximum: 5 } }
+      responses:
+        '200': { description: Rated }
+
+  /blog-posts/{postId}/view:
+    parameters: [{ $ref: '#/components/parameters/PostId' }]
+    post:
+      tags: [Blog]
+      summary: Record an anonymous-friendly page View of this Blog Post's detail page (issue #18)
+      security: []
+      description: >-
+        Called once per mount of a Blog Post's detail page, whether or not the
+        visitor is signed in. Reuses the same visitor_id cookie as Listing
+        View tracking (issue #16) as the dedup key, fire-and-forget by design
+        — always 204, deduped server-side per (Blog Post, visitor session) per
+        calendar day. No owner-skip check: unlike a Listing, a Blog Post has
+        no owning Business. Write-only for now; feeds Featured Score (#15,
+        ADR-0013).
+      responses:
+        '204': { description: Recorded (or silently deduped) }
+
+  # ===========================================================================
+  # FAQ
+  # ===========================================================================
+  /faq-categories:
+    get:
+      tags: [FAQ]
+      security: []
+      summary: List FAQ categories, in sort order
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FaqCategory' }
+    post:
+      tags: [FAQ]
+      summary: Create an FAQ category (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FaqCategoryInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FaqCategory' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /faq-categories/{categoryId}:
+    parameters: [{ $ref: '#/components/parameters/CategoryId' }]
+    patch:
+      tags: [FAQ]
+      summary: Update an FAQ category (Super Admin) — partial
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FaqCategoryUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FaqCategory' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [FAQ]
+      summary: Delete an FAQ category (Super Admin) — cascades to its FAQs
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /faqs:
+    get:
+      tags: [FAQ]
+      security: []
+      summary: List FAQs in sort order, optionally filtered by category
+      parameters:
+        - name: category
+          in: query
+          description: The FAQ category's UUID — FAQ categories have no slug to match on.
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Faq' }
+    post:
+      tags: [FAQ]
+      summary: Create an FAQ (Super Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FaqInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Faq' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /faqs/{faqId}:
+    parameters:
+      - name: faqId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [FAQ]
+      summary: Update an FAQ (Super Admin) — partial
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FaqUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Faq' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [FAQ]
+      summary: Delete an FAQ (Super Admin)
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ===========================================================================
+  # Static content, newsletter
+  # ===========================================================================
+  # Static-page SEO (FR189's third target) is a convention on this module, not a
+  # feature of its own: a page's meta lives in a Content Block with the reserved
+  # block key `seo`, whose content is { title, description, ogImage, twitterCard }.
+  #
+  # Phase 9 identified this as the obvious approach and left it unbuilt, noting it
+  # wasn't in the contract. It needs no backend change — page slugs and block keys
+  # are deliberately free strings, validated against no allowlist, precisely so a
+  # page can gain a section without a backend deploy. Documenting the key is the
+  # whole of the work; the public site reads it when rendering meta tags.
+  /content-blocks/{pageSlug}:
+    parameters:
+      - name: pageSlug
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Content]
+      security: []
+      summary: Get all content blocks for a page (Home/About/Contact editorial copy)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ContentBlock' }
+
+  /content-blocks/{pageSlug}/{blockKey}:
+    parameters:
+      - name: pageSlug
+        in: path
+        required: true
+        schema: { type: string }
+      - name: blockKey
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      tags: [Content]
+      summary: Create/update a content block (Super Admin)
+      description: |
+        Upsert: creating a block and editing one are the same call, both 200.
+        `content` is replaced wholesale, not merged, and must be a JSON object.
+        Guarded by `Content:edit` — `Content:create` is unused by this module.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties: { content: { type: object } }
+      responses:
+        '200':
+          description: Created or updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContentBlock' }
+
+  /contact-messages:
+    post:
+      tags: [Content]
+      security: []
+      summary: Send the Contact page's "Send Us a Message" form (FR128 — public)
+      description: >-
+        Deliberately not an Enquiry. Per CONTEXT.md an Enquiry is a message to a
+        Business, landing in that Business Owner's inbox, and requires a Listing;
+        a message to the platform has neither. Public and unauthenticated,
+        mirroring Enquiry submission — a question to the platform shouldn't be
+        gated behind a signup.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactMessageInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactMessage' }
+        '400':
+          description: Validation failed, or Privacy Policy consent was not given.
+    get:
+      tags: [Content]
+      summary: Read the Contact-page inbox (Super Admin)
+      description: >-
+        Guarded by Content, not Enquiries — Business Owners hold Enquiries:view
+        for their own inbox, and messages addressed to the platform are not
+        theirs to read.
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ContactMessageStatus' }
+      responses:
+        '200':
+          description: OK — newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ContactMessage' }
+
+  /contact-messages/{messageId}/status:
+    parameters:
+      - name: messageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Content]
+      summary: Move a Contact message through its statuses (Super Admin)
+      description: Status transitions rather than deletion, per ADR 0010.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/ContactMessageStatus' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactMessage' }
+
+  /newsletter/subscribe:
+    post:
+      tags: [Content]
+      security: []
+      summary: Subscribe to the newsletter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                source: { type: string }
+      responses:
+        '201':
+          description: |
+            Subscribed. Idempotent — re-subscribing an existing address reactivates
+            it and returns 201 rather than conflicting, and preserves its original
+            subscribedAt.
+
+            The response deliberately carries only the caller's own email and a
+            status that is always `active`, never the stored row: echoing back the
+            preserved subscribedAt would let anyone POST an address and learn from
+            an old date that it was already subscribed. Only the Super Admin list
+            endpoint returns full subscriber records.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubscribeAck' }
+
+  /newsletter/unsubscribe:
+    post:
+      tags: [Content]
+      security: []
+      summary: Unsubscribe from the newsletter
+      description: |
+        Always 204, whether or not the address was subscribed: reporting a miss
+        would make this endpoint an oracle for testing whether any given address
+        is on the list. Sets status to `unsubscribed` rather than deleting the row.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '204': { description: Unsubscribed (or was never subscribed) }
+
+  /newsletter/subscribers:
+    get:
+      tags: [Content]
+      summary: List/export subscribers (Super Admin)
+      description: |
+        Unpaginated, newest first — the purpose of this endpoint is export, and a
+        paginated export is a worse export. CSV is the client's job.
+      parameters:
+        - name: search
+          in: query
+          description: Case-insensitive partial match on email.
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, unsubscribed] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NewsletterSubscriber' }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: session_id
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    CategoryId:
+      name: categoryId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    BusinessId:
+      name: businessId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ListingId:
+      name: listingId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ReviewId:
+      name: reviewId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PromotionId:
+      name: promotionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CommentId:
+      name: commentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EnquiryId:
+      name: enquiryId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PostId:
+      name: postId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Not authenticated
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Not permitted (RBAC)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Conflicts with an existing resource or constraint
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
+
+    ApprovalStatus:
+      type: string
+      enum: [pending, approved, rejected, suspended, archived]
+
+    NamedLookup:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        # Present on Categories and Locations; absent on the plain lookups
+        # (amenities, attribute tags, property types, languages), which have no
+        # slug column.
+        slug: { type: string }
+    NamedLookupInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+
+    PriceBand:
+      type: object
+      required: [id, label, minAmount, maxAmount]
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        minAmount: { type: integer }
+        maxAmount: { type: integer, nullable: true }
+
+    Category:
+      allOf:
+        - $ref: '#/components/schemas/NamedLookup'
+        - type: object
+          required: [slug, hasDetailTable, sortOrder]
+          properties:
+            # The public site reads icon and color from here rather than
+            # hardcoding a category-to-colour map (Phase 10).
+            icon: { type: string, nullable: true }
+            color: { type: string, nullable: true }
+            # Whether the category has a bespoke detail table (ADR 0003). The
+            # public site routes on this: true gets the category's bespoke page,
+            # false gets the generic Listing page.
+            hasDetailTable: { type: boolean }
+            sortOrder: { type: integer }
+    CategoryInput:
+      type: object
+      required: [name, slug]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        icon: { type: string }
+        color: { type: string }
+        sortOrder: { type: integer }
+
+    CategoryAttribute:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        categoryId: { type: string, format: uuid }
+        name: { type: string }
+        fieldType: { type: string, enum: [text, number, boolean, select] }
+        options: { type: array, items: { type: string }, nullable: true }
+        isRequired: { type: boolean }
+        sortOrder: { type: integer }
+    CategoryAttributeInput:
+      type: object
+      required: [name, fieldType]
+      properties:
+        name: { type: string }
+        fieldType: { type: string, enum: [text, number, boolean, select] }
+        options: { type: array, items: { type: string } }
+        isRequired: { type: boolean }
+        sortOrder: { type: integer }
+
+    User:
+      type: object
+      required: [id, email, name, username, phone, avatarUrl, bio, dateOfBirth, gender, status, roles, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        username:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{2,19}$'
+          description: >-
+            Public handle (issue #14), auto-generated at registration and
+            renameable via PATCH /me. Shown alongside name wherever a Review or
+            Enquiry author is displayed to someone other than themselves.
+        phone: { type: string, nullable: true }
+        avatarUrl: { type: string, nullable: true }
+        bio: { type: string, nullable: true }
+        dateOfBirth:
+          type: string
+          format: date
+          nullable: true
+          description: Storage-only (issue #14) — nothing in the app reads or acts on this.
+        gender:
+          type: string
+          nullable: true
+          enum: [Female, Male, Non-binary, 'Prefer not to say', null]
+          description: Storage-only (issue #14).
+        status: { type: string, enum: [active, suspended, deleted] }
+        roles: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+    # Phase 6: used only by GET /auth/me, POST /users/{userId}/impersonate,
+    # and POST /auth/exit-impersonation — the plain User schema (GET /users,
+    # etc.) stays unchanged so this doesn't leak an impersonation-specific
+    # field into unrelated responses.
+    OwnProfileInput:
+      type: object
+      additionalProperties: false
+      description: Every field is optional; null clears a nullable field, absent leaves it untouched. username has no null clear — it's NOT NULL — but is otherwise optional/absent-leaves-alone.
+      properties:
+        name: { type: string, maxLength: 255 }
+        username: { type: string, minLength: 3, maxLength: 20, pattern: '^[a-z][a-z0-9_]{2,19}$' }
+        phone: { type: string, maxLength: 30, nullable: true }
+        avatarUrl: { type: string, nullable: true }
+        bio: { type: string, maxLength: 1000, nullable: true }
+        dateOfBirth: { type: string, format: date, nullable: true }
+        gender: { type: string, nullable: true, enum: [Female, Male, Non-binary, 'Prefer not to say', null] }
+
+    CurrentUser:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          required: [permissions, impersonatedBy, emailVerifiedAt, hasPassword]
+          properties:
+            impersonatedBy: { type: string, format: uuid, nullable: true }
+            emailVerifiedAt: { type: string, format: date-time, nullable: true }
+            hasPassword:
+              type: boolean
+              description: >-
+                False for a Google-only account (issue #13) that has never set a
+                password. Drives whether Account Settings shows "Change
+                Password" or "Set Password".
+            permissions:
+              type: array
+              items: { $ref: '#/components/schemas/Permission' }
+              description: >-
+                The caller's effective permissions, unioned across their Roles and
+                deduplicated (Phase 10). This is what lets the Admin panel render
+                navigation and actions for a Super-Admin-created custom Role with no
+                frontend change — branching on Role names would leave a "Content
+                Moderator" seeing the Business Owner UI or nothing.
+
+                Advisory, for rendering only. Every endpoint keeps its own guard;
+                hiding a button is a courtesy, not a control. Empty for a User with
+                no Roles, which is a real account (a plain public visitor), not an
+                error.
+
+    Role:
+      type: object
+      # permissions became part of every /roles response in Phase 10: the
+      # Roles & Permissions matrix can't render grants it can't read.
+      required: [id, name, isSystem, permissions]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        isSystem: { type: boolean }
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/Permission' }
+
+    Permission:
+      type: object
+      required: [module, action]
+      properties:
+        module: { type: string }
+        action: { type: string, enum: [view, create, edit, delete, approve, publish] }
+
+    Business:
+      type: object
+      required: [id, ownerId, name, description, contactPhone, contactEmail, website, address, socialLinks, logoUrl, coverUrl, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        contactPhone: { type: string, nullable: true }
+        contactEmail: { type: string, nullable: true }
+        website: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        socialLinks: { type: object, additionalProperties: { type: string } }
+        logoUrl: { type: string, nullable: true }
+        coverUrl: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/ApprovalStatus' }
+        rejectionReason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    BusinessInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        contactPhone: { type: string }
+        contactEmail: { type: string }
+        website: { type: string }
+        address: { type: string }
+        socialLinks: { type: object, additionalProperties: { type: string } }
+        logoUrl: { type: string }
+        coverUrl: { type: string }
+
+    BusinessSummary:
+      type: object
+      # The public-facing slice of a Business, for the search results page's
+      # secondary group. No ownerId, socialLinks, or rejectionReason — a search
+      # result is a card a visitor clicks, not the owner's record.
+      required: [id, name, description, logoUrl, address, listingCount]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        logoUrl: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        # How many of this Business's Listings the caller can see — the card's
+        # "N listings" affordance, computed under the same visibility rule.
+        listingCount: { type: integer }
+
+    BusinessStaff:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        email: { type: string, format: email }
+        permissions: { type: object, additionalProperties: { type: boolean } }
+        status: { type: string, enum: [pending, accepted, revoked] }
+
+    ContactMessageStatus:
+      type: string
+      enum: [sent, responded, closed]
+
+    ContactMessage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        userId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Set when a signed-in User submitted; null for an anonymous visitor.
+        name: { type: string }
+        email: { type: string }
+        subject: { type: string }
+        phone: { type: string, nullable: true }
+        message: { type: string }
+        consented:
+          type: boolean
+          description: >-
+            FR128's Privacy Policy checkbox. Stored rather than only validated —
+            the point of a consent checkbox is being able to show afterwards that
+            it was ticked.
+        status: { $ref: '#/components/schemas/ContactMessageStatus' }
+        createdAt: { type: string, format: date-time }
+
+    ContactMessageInput:
+      type: object
+      required: [name, email, subject, message, consented]
+      properties:
+        name: { type: string, maxLength: 255 }
+        email: { type: string, format: email, maxLength: 255 }
+        subject:
+          type: string
+          maxLength: 255
+          description: >-
+            Free text, not an enum. FR128 calls this a dropdown, but its options are
+            contactContent.subjects — editorial copy a Super Admin edits through
+            Content Blocks. A fixed vocabulary here would mean a backend deploy to
+            add "Careers" to a dropdown.
+        phone: { type: string, maxLength: 30, nullable: true }
+        message:
+          type: string
+          maxLength: 1000
+          description: FR128's character limit, enforced where the form promises it.
+        consented:
+          type: boolean
+          description: Must be true. A message whose sender declined consent is refused, not stored.
+
+    Badge:
+      type: object
+      required: [id, label, color, sortOrder]
+      description: >-
+        FR30's promotional badge vocabulary (Popular, Luxury, Best Seller,
+        Budget). A lookup rather than a free-text column: the public site styles
+        a badge by its label, so free text means a typo renders unstyled. The
+        colour lives here — same precedent as categories.color — so no client
+        hardcodes a badge-to-colour map.
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        color: { type: string, nullable: true }
+        sortOrder: { type: integer }
+
+    BadgeInput:
+      type: object
+      required: [label]
+      properties:
+        label: { type: string }
+        color: { type: string, nullable: true }
+        sortOrder: { type: integer }
+
+    ListingBadge:
+      type: object
+      description: The badge as embedded in a Listing — label and colour travel with every card.
+      required: [id, label, color]
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        color: { type: string, nullable: true }
+
+    PlatformStats:
+      description: Real platform-wide counts for the home page's stat tiles.
+      type: object
+      required: [businesses, activities, enquiries, averageRating]
+      properties:
+        businesses: { type: integer }
+        activities: { type: integer }
+        enquiries: { type: integer }
+        averageRating: { type: number }
+
+    ListingStats:
+      description: A Business Owner's own interaction counts and Featured/Sponsored status for one Listing (issue #24).
+      type: object
+      required: [views, favorites, contactReveals, enquiries, featured, sponsored]
+      properties:
+        views: { type: integer }
+        favorites: { type: integer }
+        contactReveals: { type: integer }
+        enquiries: { type: integer }
+        featured:
+          type: boolean
+          description: Currently in its category's displayed Featured selection, organically (not Sponsored).
+        sponsored:
+          type: boolean
+          description: Currently a paid Sponsored placement (issue #22) — mutually exclusive with `featured`.
+
+    PriceUnit:
+      type: string
+      description: >-
+        How a Listing's price is quoted. Stored alongside the amount rather than
+        baked into a formatted label, so it can be filtered on. 'from' is the
+        generic unit for the four categories with no detail table (ADR 0003).
+      enum: [per_night, for_two, per_person, from]
+
+    ListingSummary:
+      type: object
+      # Declared required because the response always carries them. Without this
+      # every generated field is `| undefined` and the client has to guard fields
+      # that are never absent — which makes the generated types catch nothing,
+      # defeating the point of generating them.
+      required:
+        - id
+        - businessId
+        - categoryId
+        - locationId
+        - name
+        - slug
+        - status
+        - primaryImageUrl
+        - averageRating
+        - priceFrom
+        - priceUnit
+        - badge
+        - categoryName
+        - categorySlug
+        - locationName
+        - reviewCount
+        - tags
+        - phone
+        - website
+      properties:
+        id: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        categoryId: { type: string, format: uuid }
+        locationId: { type: string, format: uuid, nullable: true }
+        name: { type: string }
+        slug: { type: string }
+        status: { $ref: '#/components/schemas/ApprovalStatus' }
+        primaryImageUrl: { type: string, nullable: true }
+        averageRating: { type: number, nullable: true }
+        priceFrom:
+          type: integer
+          nullable: true
+          description: >-
+            The Listing's headline price. Derived from the owning detail table for
+            the four categories that have one (cheapest room's nightly rate, average
+            cost for two, per-person rate) and written directly for the four that
+            don't. Null is a real answer — a Listing need not have a price.
+        priceUnit:
+          allOf:
+            - $ref: '#/components/schemas/PriceUnit'
+          nullable: true
+        badge:
+          allOf:
+            - $ref: '#/components/schemas/ListingBadge'
+          nullable: true
+        # Display-ready fields (Phase 10). ListingSummary used to be nine fields
+        # of mostly UUIDs, so rendering one directory grid meant this endpoint
+        # plus a Business fetch per card plus /categories plus /locations plus
+        # /attribute-tags. Embedding them couples the card to the endpoint —
+        # the right trade for a read-heavy public directory, because it makes a
+        # grid one request and it is the SSR path a crawler sees.
+        categoryName: { type: string }
+        categorySlug: { type: string }
+        locationName: { type: string, nullable: true }
+        reviewCount:
+          type: integer
+          description: Approved Reviews only — the count beside a rating must match the Reviews a visitor can read (ADR 0006).
+        tags:
+          type: array
+          items: { type: string }
+          description: Attribute tag names, not ids.
+        phone:
+          type: string
+          nullable: true
+          description: The owning Business's contact phone — contacting a Business directly is the point of the directory (FR24).
+        website: { type: string, nullable: true }
+
+    FeaturedSections:
+      description: >-
+        The home page's precomputed Featured shelves, keyed by section (issue
+        #19, extended to Blog by #21). blog items are plain BlogPostSummary —
+        no `sponsored` field, since Sponsored isn't available for Blog Posts.
+      type: object
+      required: [hotels, restaurants, activities, toursAndTravels, blog]
+      properties:
+        hotels: { type: array, items: { $ref: '#/components/schemas/FeaturedListingItem' } }
+        restaurants: { type: array, items: { $ref: '#/components/schemas/FeaturedListingItem' } }
+        activities: { type: array, items: { $ref: '#/components/schemas/FeaturedListingItem' } }
+        toursAndTravels: { type: array, items: { $ref: '#/components/schemas/FeaturedListingItem' } }
+        blog: { type: array, items: { $ref: '#/components/schemas/BlogPostSummary' } }
+
+    FeaturedListingItem:
+      description: A ListingSummary plus whether this slot is Sponsored (issue #19, #22) rather than organically ranked.
+      allOf:
+        - $ref: '#/components/schemas/ListingSummary'
+        - type: object
+          required: [sponsored]
+          properties:
+            sponsored: { type: boolean }
+
+    Listing:
+      allOf:
+        - $ref: '#/components/schemas/ListingSummary'
+        - type: object
+          required: [description, seoTitle, seoDescription, ogImage, twitterCard, rejectionReason, firstPublishedAt, images, amenityIds, tagIds, createdAt, updatedAt]
+          properties:
+            description: { type: string, nullable: true }
+            seoTitle: { type: string, nullable: true }
+            seoDescription: { type: string, nullable: true }
+            ogImage: { type: string, nullable: true }
+            twitterCard:
+              type: string
+              nullable: true
+              enum: [summary, summary_large_image, app, player]
+            rejectionReason: { type: string, nullable: true }
+            firstPublishedAt:
+              type: string
+              format: date-time
+              nullable: true
+              description: >-
+                When the Listing first went live. Null means it never has, which is
+                what lets its slug still track its name — ADR 0005 gates only the
+                first publish, and the slug freezes at that moment because a rename
+                afterwards would silently rewrite a live URL.
+            images:
+              type: array
+              items: { $ref: '#/components/schemas/ListingImage' }
+            amenityIds: { type: array, items: { type: string, format: uuid } }
+            tagIds: { type: array, items: { type: string, format: uuid } }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    ListingInput:
+      type: object
+      required: [businessId, categoryId, name]
+      properties:
+        businessId: { type: string, format: uuid }
+        categoryId: { type: string, format: uuid }
+        locationId: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        seoTitle: { type: string }
+        seoDescription: { type: string }
+        # A URL to an already-hosted image, not an upload — unlike ListingImage.
+        ogImage: { type: string }
+        twitterCard:
+          type: string
+          enum: [summary, summary_large_image, app, player]
+        priceFrom:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >-
+            Accepted only for the four categories with no detail table (ADR 0003).
+            For the rest the price is derived from the detail table that owns it and
+            a direct write is refused with 400 — silently ignoring it would leave an
+            owner believing they had set a price that the next room edit was always
+            going to overwrite.
+        priceUnit:
+          allOf:
+            - $ref: '#/components/schemas/PriceUnit'
+          nullable: true
+
+    ListingImage:
+      type: object
+      required: [id, url, caption, sortOrder]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        caption: { type: string, nullable: true }
+        sortOrder: { type: integer }
+
+    HotelDetails:
+      type: object
+      required: [propertyTypeId, starRating, checkInTime, checkOutTime, guestsCapacityNote, cancellationPolicy, languageIds, rooms, availabilityBlocks]
+      properties:
+        propertyTypeId: { type: string, format: uuid, nullable: true }
+        starRating: { type: integer, nullable: true }
+        checkInTime: { type: string, nullable: true }
+        checkOutTime: { type: string, nullable: true }
+        guestsCapacityNote: { type: string, nullable: true }
+        cancellationPolicy: { type: string, nullable: true }
+        languageIds: { type: array, items: { type: string, format: uuid } }
+        rooms:
+          type: array
+          items: { $ref: '#/components/schemas/HotelRoom' }
+        availabilityBlocks:
+          type: array
+          items: { $ref: '#/components/schemas/HotelAvailabilityBlock' }
+    HotelDetailsInput:
+      type: object
+      properties:
+        # Full-replace on write (upsertHotelDetails): an omitted field defaults
+        # to null, and an explicit null clears it — both are honest here, unlike
+        # languageIds below, which is the one tri-state (omitted-vs-empty) field.
+        propertyTypeId: { type: string, format: uuid, nullable: true }
+        starRating: { type: integer, minimum: 1, maximum: 5, nullable: true }
+        checkInTime: { type: string, nullable: true }
+        checkOutTime: { type: string, nullable: true }
+        guestsCapacityNote: { type: string, nullable: true }
+        cancellationPolicy: { type: string, nullable: true }
+        languageIds: { type: array, items: { type: string, format: uuid } }
+
+    HotelRoom:
+      type: object
+      required: [id, name, description, ratePerNight, quantityAvailable, sortOrder]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        ratePerNight: { type: integer }
+        quantityAvailable: { type: integer }
+        sortOrder: { type: integer }
+    HotelRoomInput:
+      type: object
+      required: [name, ratePerNight]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        ratePerNight: { type: integer, minimum: 0 }
+        quantityAvailable: { type: integer, minimum: 0 }
+        sortOrder: { type: integer }
+
+    HotelAvailabilityBlock:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        note: { type: string, nullable: true }
+    HotelAvailabilityBlockInput:
+      type: object
+      required: [startDate, endDate]
+      properties:
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        note: { type: string }
+
+    RestaurantDetails:
+      type: object
+      required: [cuisineType, avgCostForTwo, bestFor, openingHours, menuItems]
+      properties:
+        cuisineType: { type: string, nullable: true }
+        avgCostForTwo: { type: integer, nullable: true }
+        bestFor: { type: string, nullable: true }
+        openingHours:
+          type: array
+          items: { $ref: '#/components/schemas/OpeningHour' }
+        menuItems:
+          type: array
+          items: { $ref: '#/components/schemas/MenuItem' }
+    RestaurantDetailsInput:
+      type: object
+      properties:
+        cuisineType: { type: string }
+        avgCostForTwo: { type: integer }
+        bestFor: { type: string }
+
+    OpeningHour:
+      type: object
+      required: [dayOfWeek, openTime, closeTime, isClosed]
+      properties:
+        dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+        openTime: { type: string, nullable: true }
+        closeTime: { type: string, nullable: true }
+        isClosed: { type: boolean }
+
+    MenuItem:
+      type: object
+      required: [id, name, price, imageUrl, sortOrder]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        price: { type: integer, nullable: true }
+        imageUrl: { type: string, nullable: true }
+        sortOrder: { type: integer }
+    MenuItemInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        price: { type: integer, minimum: 0 }
+        imageUrl: { type: string }
+        sortOrder: { type: integer }
+
+    ActivityDetails:
+      type: object
+      required: [duration, maxHeight, totalDistance, difficultyLevel, pricePerPerson, itinerarySteps, inclusions]
+      properties:
+        duration: { type: string, nullable: true }
+        maxHeight: { type: string, nullable: true }
+        totalDistance: { type: string, nullable: true }
+        difficultyLevel: { type: string, nullable: true }
+        # FR58. Also the source the Listing's priceFrom derives from.
+        pricePerPerson: { type: integer, nullable: true }
+        itinerarySteps:
+          type: array
+          items: { $ref: '#/components/schemas/ItineraryStep' }
+        inclusions:
+          type: array
+          items: { $ref: '#/components/schemas/Inclusion' }
+    ActivityDetailsInput:
+      type: object
+      properties:
+        duration: { type: string }
+        maxHeight: { type: string }
+        totalDistance: { type: string }
+        difficultyLevel: { type: string }
+        pricePerPerson: { type: integer, minimum: 0, nullable: true }
+
+    TourDetails:
+      type: object
+      required: [tourType, bestFor, duration, pricePerPerson, languageIds, itinerarySteps, inclusions, attractions]
+      properties:
+        tourType: { type: string, nullable: true }
+        bestFor: { type: string, nullable: true }
+        duration: { type: string, nullable: true }
+        # FR58. Also the source the Listing's priceFrom derives from.
+        pricePerPerson: { type: integer, nullable: true }
+        languageIds: { type: array, items: { type: string, format: uuid } }
+        itinerarySteps:
+          type: array
+          items: { $ref: '#/components/schemas/ItineraryStep' }
+        inclusions:
+          type: array
+          items: { $ref: '#/components/schemas/Inclusion' }
+        # Phase 4: id-bearing objects, not plain strings — each attraction
+        # needs its own id for PATCH/DELETE addressing (see child-collection
+        # endpoints below).
+        attractions:
+          type: array
+          items: { $ref: '#/components/schemas/TourAttraction' }
+    TourDetailsInput:
+      type: object
+      properties:
+        tourType: { type: string }
+        bestFor: { type: string }
+        duration: { type: string }
+        pricePerPerson: { type: integer, minimum: 0, nullable: true }
+        languageIds: { type: array, items: { type: string, format: uuid } }
+
+    ItineraryStep:
+      type: object
+      required: [id, stepOrder, title, description, duration]
+      properties:
+        id: { type: string, format: uuid }
+        stepOrder: { type: integer }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        duration: { type: string, nullable: true }
+        stepType: { type: string, enum: [pickup, stop, dropoff], nullable: true }
+    # Shared by both Activity and Tour itinerary steps (stepType is unused/
+    # ignored for Activity — see Phase 4 spec).
+    ItineraryStepInput:
+      type: object
+      required: [stepOrder, title]
+      properties:
+        stepOrder: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        duration: { type: string }
+        stepType: { type: string, enum: [pickup, stop, dropoff] }
+
+    Inclusion:
+      type: object
+      required: [id, item, isIncluded]
+      properties:
+        id: { type: string, format: uuid }
+        item: { type: string }
+        isIncluded: { type: boolean }
+    # Shared by both Activity and Tour inclusions/exclusions.
+    InclusionInput:
+      type: object
+      required: [item]
+      properties:
+        item: { type: string }
+        isIncluded: { type: boolean }
+
+    TourAttraction:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+    TourAttractionInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+
+    Review:
+      type: object
+      required: [id, listingId, userId, rating, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        listingId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        text: { type: string }
+        status: { type: string, enum: [pending, approved, rejected] }
+        ownerReply: { type: string, nullable: true }
+        repliedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        listing:
+          allOf: [{ $ref: '#/components/schemas/ListingSummary' }]
+          description: Only present on GET /me/reviews (issue #13).
+        authorName:
+          type: string
+          description: >-
+            Only present on GET /listings/{listingId}/reviews (issue #14) —
+            the public "shown to someone other than the author" surface.
+        authorUsername:
+          type: string
+          description: Only present on GET /listings/{listingId}/reviews (issue #14).
+
+    Enquiry:
+      type: object
+      required: [id, listingId, userId, name, email, phone, message, status, ownerResponse, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        listingId: { type: string, format: uuid }
+        userId: { type: string, format: uuid, nullable: true }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        message: { type: string }
+        status: { type: string, enum: [sent, responded, closed] }
+        ownerResponse: { type: string, nullable: true }
+        smsStatus: { type: string, enum: [not_sent, pending, sent, failed] }
+        createdAt: { type: string, format: date-time }
+        listing:
+          allOf: [{ $ref: '#/components/schemas/ListingSummary' }]
+          description: Only present on GET /me/enquiries (issue #13).
+
+    ApprovalQueueItem:
+      type: object
+      properties:
+        kind: { type: string, enum: [business, listing, review, blog_comment] }
+        id: { type: string, format: uuid }
+        subject: { type: string }
+        submittedAt: { type: string, format: date-time }
+
+    DashboardKpis:
+      type: object
+      properties:
+        totalBusinesses: { type: integer }
+        totalUsers: { type: integer }
+        totalListings: { type: integer }
+        totalEnquiries: { type: integer }
+        totalViews: { type: integer }
+        averageRating: { type: number }
+
+    AuditLogEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        actorId: { type: string, format: uuid, nullable: true }
+        action: { type: string }
+        tableName: { type: string }
+        recordId: { type: string, format: uuid }
+        oldData: { type: object, nullable: true }
+        newData: { type: object, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    Promotion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        listingId: { type: string, format: uuid }
+        title: { type: string }
+        discountPercent: { type: integer, nullable: true }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        status: { type: string, enum: [draft, pending, active, expired] }
+        imageUrl: { type: string, nullable: true }
+    # `status` is deliberately absent — a new Promotion always starts as
+    # 'draft'; status only moves via PATCH's approval flow.
+    PromotionInput:
+      type: object
+      required: [listingId, title, startDate, endDate]
+      properties:
+        listingId: { type: string, format: uuid }
+        title: { type: string }
+        discountPercent: { type: integer, minimum: 0, maximum: 100 }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        imageUrl: { type: string }
+    PromotionUpdate:
+      type: object
+      properties:
+        title: { type: string }
+        discountPercent: { type: integer, minimum: 0, maximum: 100, nullable: true }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        imageUrl: { type: string, nullable: true }
+        status: { type: string, enum: [draft, pending, active, expired] }
+
+    FeaturedListing:
+      type: object
+      required: [id, listingId, startDate, endDate, sortOrder]
+      properties:
+        id: { type: string, format: uuid }
+        listingId: { type: string, format: uuid }
+        startDate: { type: string, format: date }
+        # null = open-ended, runs until explicitly removed or given an end date
+        endDate: { type: string, format: date, nullable: true }
+        sortOrder: { type: integer }
+    FeaturedListingInput:
+      type: object
+      required: [listingId, startDate]
+      properties:
+        listingId: { type: string, format: uuid }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date, nullable: true }
+        sortOrder: { type: integer }
+    FeaturedListingUpdate:
+      type: object
+      properties:
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date, nullable: true }
+        sortOrder: { type: integer }
+
+    Banner:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        imageUrl: { type: string }
+        linkUrl: { type: string, nullable: true }
+        placement: { type: string }
+        sortOrder: { type: integer }
+        status: { type: string, enum: [draft, active, expired] }
+        # Both nullable — null means unbounded on that end (schema columns are nullable)
+        startDate: { type: string, format: date, nullable: true }
+        endDate: { type: string, format: date, nullable: true }
+    # Unlike PromotionInput, `status` IS settable on create: a Banner is
+    # Super-Admin-only end to end, so there's no self-approval to prevent.
+    # Omit it and the column's 'draft' default applies.
+    BannerInput:
+      type: object
+      required: [title, imageUrl, placement]
+      properties:
+        title: { type: string }
+        imageUrl: { type: string }
+        linkUrl: { type: string, nullable: true }
+        placement: { type: string }
+        sortOrder: { type: integer }
+        status: { type: string, enum: [draft, active, expired] }
+        startDate: { type: string, format: date, nullable: true }
+        endDate: { type: string, format: date, nullable: true }
+    BannerUpdate:
+      type: object
+      properties:
+        title: { type: string }
+        imageUrl: { type: string }
+        linkUrl: { type: string, nullable: true }
+        placement: { type: string }
+        sortOrder: { type: integer }
+        status: { type: string, enum: [draft, active, expired] }
+        startDate: { type: string, format: date, nullable: true }
+        endDate: { type: string, format: date, nullable: true }
+
+    BlogPostSummary:
+      type: object
+      # Declared required because the response always carries them — same
+      # reasoning as ListingSummary above (Phase 10): without this every
+      # generated field is `| undefined`, which defeats generated types.
+      required:
+        - id
+        - title
+        - slug
+        - excerpt
+        - coverImage
+        - categoryId
+        - authorId
+        - readingTimeMinutes
+        - status
+        - publishedAt
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        slug: { type: string }
+        excerpt: { type: string, nullable: true }
+        coverImage: { type: string, nullable: true }
+        categoryId: { type: string, format: uuid }
+        authorId: { type: string, format: uuid }
+        readingTimeMinutes: { type: integer, nullable: true }
+        status: { type: string, enum: [draft, pending, published] }
+        publishedAt: { type: string, format: date-time, nullable: true }
+
+    BlogPost:
+      allOf:
+        - $ref: '#/components/schemas/BlogPostSummary'
+        - type: object
+          properties:
+            body: { type: string }
+            seoTitle: { type: string, nullable: true }
+            seoDescription: { type: string, nullable: true }
+            # FR189, closed in Phase 10. Phase 9 exposed these on Listings, where
+            # the columns already existed unused, and left Blog Posts out because
+            # they needed a migration — noting the asymmetry it created. A Blog
+            # Post is the thing most likely to be shared into WhatsApp, so the
+            # asymmetry was backwards.
+            ogImage: { type: string, nullable: true }
+            twitterCard:
+              type: string
+              nullable: true
+              enum: [summary, summary_large_image, app, player]
+            relatedPostIds: { type: array, items: { type: string, format: uuid } }
+            placeListingIds: { type: array, items: { type: string, format: uuid } }
+    # `slug`, `readingTimeMinutes`, `authorId`, `status`, and `publishedAt` are
+    # all absent by design: the first two are derived server-side from title
+    # and body, authorId comes from the session, and status only moves via
+    # PATCH or /publish. A new post always starts as 'draft'.
+    BlogPostInput:
+      type: object
+      required: [categoryId, title, body]
+      properties:
+        categoryId: { type: string, format: uuid }
+        title: { type: string }
+        excerpt: { type: string, nullable: true }
+        body: { type: string }
+        coverImage: { type: string, nullable: true }
+        seoTitle: { type: string, nullable: true }
+        seoDescription: { type: string, nullable: true }
+        # A URL to an already-hosted image, not an upload — same as a Listing's.
+        ogImage: { type: string, nullable: true }
+        twitterCard:
+          type: string
+          nullable: true
+          enum: [summary, summary_large_image, app, player]
+        # A post may not relate to itself (400).
+        relatedPostIds: { type: array, items: { type: string, format: uuid } }
+        # Every id must be an approved Listing (400) — a published article must
+        # not link somewhere readers can't go (FR114).
+        placeListingIds: { type: array, items: { type: string, format: uuid } }
+    BlogPostUpdate:
+      type: object
+      properties:
+        categoryId: { type: string, format: uuid }
+        title: { type: string }
+        excerpt: { type: string, nullable: true }
+        body: { type: string }
+        coverImage: { type: string, nullable: true }
+        seoTitle: { type: string, nullable: true }
+        seoDescription: { type: string, nullable: true }
+        relatedPostIds: { type: array, items: { type: string, format: uuid } }
+        placeListingIds: { type: array, items: { type: string, format: uuid } }
+        status: { type: string, enum: [draft, pending, published] }
+
+    BlogComment:
+      type: object
+      # Declared required because the response always carries them — same
+      # reasoning as ListingSummary/BlogPostSummary (a pre-existing gap here
+      # left every field `| undefined`, found while wiring issue #24).
+      required: [id, postId, userId, body, likeCount, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        postId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        body: { type: string }
+        # Read-only: nothing in this API likes a comment, so this is always 0.
+        likeCount: { type: integer }
+        status: { type: string, enum: [pending, approved, rejected] }
+        createdAt: { type: string, format: date-time }
+
+    # Phase 8: NOT a NamedLookup, which the contract previously claimed —
+    # faq_categories has a sort_order and no slug, the opposite of that shape.
+    FaqCategory:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        sortOrder: { type: integer }
+    FaqCategoryInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        sortOrder: { type: integer }
+    FaqCategoryUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        sortOrder: { type: integer }
+
+    Faq:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        categoryId: { type: string, format: uuid }
+        question: { type: string }
+        answer: { type: string }
+        sortOrder: { type: integer }
+    FaqInput:
+      type: object
+      required: [categoryId, question, answer]
+      properties:
+        categoryId: { type: string, format: uuid }
+        question: { type: string }
+        answer: { type: string }
+        sortOrder: { type: integer }
+    FaqUpdate:
+      type: object
+      properties:
+        categoryId: { type: string, format: uuid }
+        question: { type: string }
+        answer: { type: string }
+        sortOrder: { type: integer }
+
+    ContentBlock:
+      type: object
+      required: [pageSlug, blockKey, content, updatedAt]
+      properties:
+        pageSlug: { type: string }
+        blockKey: { type: string }
+        content: { type: object }
+        updatedAt: { type: string, format: date-time }
+
+    SubscribeAck:
+      type: object
+      description: |
+        The narrow acknowledgement an anonymous subscribe receives. Both fields are
+        already known to whoever sent the request, so neither reveals whether the
+        address was previously on the list.
+      properties:
+        email: { type: string, format: email }
+        status: { type: string, enum: [active] }
+
+    NewsletterSubscriber:
+      type: object
+      description: Full subscriber record — only ever returned to a Super Admin.
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        source: { type: string, nullable: true }
+        status: { type: string, enum: [active, unsubscribed] }
+        subscribedAt: { type: string, format: date-time }
