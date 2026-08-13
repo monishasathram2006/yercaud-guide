@@ -1,0 +1,95 @@
+services:
+  postgres:
+    # pgvector/pgvector, not the stock postgres image: the hybrid search engine
+    # (issue #11) stores embeddings in a `vector` column, and the `vector`
+    # extension ships only in this image. It's Postgres 16 with pgvector +
+    # pg_trgm preinstalled — otherwise a drop-in replacement.
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: yercaud
+      POSTGRES_PASSWORD: yercaud
+      POSTGRES_DB: yercaud_directory
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yercaud -d yercaud_directory"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgres://yercaud:yercaud@postgres:5432/yercaud_directory
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: yercaud
+      # Public site (5173) and Admin (5174) dev servers, per their pinned vite ports.
+      CORS_ORIGINS: http://localhost:5173,http://localhost:5174
+      UPLOAD_DIR: uploads
+      # Demo content (dev-only; seed-demo.ts refuses to run in production).
+      SEED_DEMO: "true"
+      # Set both to auto-provision a Super Admin on startup (idempotent). Empty by default.
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_NAME: ${ADMIN_NAME:-}
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./backend/src:/app/backend/src
+      - ./backend/scripts:/app/backend/scripts
+      - ./backend/migrations:/app/backend/migrations
+      - ./backend/test:/app/backend/test
+      - ./database:/app/database
+      - backend_uploads:/app/backend/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # Browser hits the published host port; SSR (route loaders) hits the
+      # container network directly — see frontend/src/lib/api.ts.
+      VITE_API_BASE_URL: http://localhost:4000
+      INTERNAL_API_URL: http://backend:4000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/test:/app/test
+      - frontend_node_modules:/app/node_modules
+
+  admin:
+    build:
+      context: ./Admin
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: http://localhost:4000
+    ports:
+      - "5174:5174"
+    volumes:
+      - ./Admin/src:/app/src
+      - ./Admin/public:/app/public
+      - admin_node_modules:/app/node_modules
+
+volumes:
+  pgdata:
+  backend_uploads:
+  frontend_node_modules:
+  admin_node_modules:

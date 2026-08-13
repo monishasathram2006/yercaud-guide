@@ -1,0 +1,5 @@
+# Introduce paid Sponsored placements within Featured sections
+
+Alongside computed Featured ranking (ADR-0011), a Business Owner can now pay to guarantee their Listing one Featured slot in its category ("Sponsored"), capped at one of the six shown slots per section so organic ranking stays the majority. Payment is arranged off-platform, consistent with ADR-0001 (no in-platform booking/payment processing) — a Super Admin manually marks a Listing Sponsored for an agreed period, reusing the date-ranged shape `featured_listings` already had. Sponsored Listings are exempt from the ≥1-review eligibility bar, since the point is to help a new Listing get visibility it couldn't earn organically yet, and are visibly badged "Sponsored" so visitors can tell paid placement apart from earned placement. Not available for Blog Posts, which have no owning Business to attribute payment to.
+
+This is a deliberate, partial reversal of the platform's earlier stance that Featured is "editorial choice, not an owner purchase" (ADR-0001, `featured_listings` design intent) — that stance now holds only for the organic majority of each shelf.
