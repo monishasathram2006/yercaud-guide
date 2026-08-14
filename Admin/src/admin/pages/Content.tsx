@@ -1,13 +1,13 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
-import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, Download, Check, X, Send, ImagePlus, Copy, Eye, EyeOff } from "lucide-react";
+import { Plus, Download, Check, X, Send, Copy, Eye, EyeOff } from "lucide-react";
 import { PageHeader, SectionCard, StatusBadge, SkeletonList, EmptyState, fmtDate } from "../components/primitives";
 import { DataTable } from "../components/DataTable";
 import { FormDrawer } from "../components/FormDrawer";
@@ -32,10 +32,12 @@ const POST_STATUSES = ["All", "draft", "pending", "published"] as const;
 
 export function BlogPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  // `to` is a plain string, not an inline literal — same escape hatch
+  // GlobalSearch.tsx's go() uses for this app's untyped AdminRouter paths.
+  const go = (to: string) => void navigate({ to });
   const { can } = useAuth();
   const [status, setStatus] = useState<(typeof POST_STATUSES)[number]>("All");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
 
   // Fetched once, unfiltered — the status strip needs counts across every
   // status at the same time, and DataTable already filters/sorts/paginates
@@ -105,7 +107,7 @@ export function BlogPage() {
         title="Blog"
         subtitle="Posts publish through their own gate, separate from Listing approval."
         actions={can("Content", "create") ? (
-          <Button className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => setCreating(true)}>
+          <Button className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => go("/blog/new")}>
             <Plus className="w-4 h-4 mr-1" /> New Post
           </Button>
         ) : undefined}
@@ -151,7 +153,7 @@ export function BlogPage() {
                 { key: "published", header: "Published", render: (r) => (r.publishedAt ? fmtDate(r.publishedAt) : "—") },
                 { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status ?? "draft"} /> },
               ]}
-              onEdit={can("Content", "edit") ? (r) => setEditingId(r.id) : undefined}
+              onEdit={can("Content", "edit") ? (r) => go(`/blog/${r.id}/edit`) : undefined}
               onDelete={can("Content", "delete") ? (r) => remove.mutate(r.id) : undefined}
               rowActions={(r) => (
                 <>
@@ -202,16 +204,13 @@ export function BlogPage() {
           <BlogCategories />
         </TabsContent>
       </Tabs>
-      {(creating || editingId) && (
-        <BlogPostDrawer postId={editingId} onClose={() => { setCreating(false); setEditingId(null); }} />
-      )}
     </>
   );
 }
 
 /**
  * A post needs a categoryId to save, but the Admin UI previously had no way
- * to create one — the dropdown in BlogPostDrawer just listed whatever
+ * to create one — the dropdown in the blog post editor just listed whatever
  * /blog-categories already returned. On a fresh install that's empty, so
  * "New Post" was a dead end. Mirrors FAQ's inline add/delete category UX.
  */
@@ -285,225 +284,6 @@ function BlogCategories() {
         </div>
       )}
     </SectionCard>
-  );
-}
-
-type BlogPostStatus = "draft" | "pending" | "published";
-
-/** yyyy-MM-ddThh:mm, what <input type="datetime-local"> needs — chopping the ISO string is fine, it never carries fractional seconds from here. */
-function toLocalDateTimeInput(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function BlogPostDrawer({ postId, onClose }: { postId: string | null; onClose: () => void }) {
-  const queryClient = useQueryClient();
-  const { data: categories } = useQuery({
-    queryKey: ["blog-categories"],
-    queryFn: ({ signal }) => api.blog.categories(signal),
-  });
-  // Edit needs the full body, which the summary list doesn't carry.
-  const { data: post, isLoading } = useQuery({
-    queryKey: ["blog-posts", "byId", postId],
-    enabled: postId !== null,
-    queryFn: ({ signal }) => api.blog.post(postId!, signal),
-  });
-
-  const [draft, setDraft] = useState<{
-    categoryId: string;
-    title: string;
-    excerpt: string;
-    body: string;
-    coverImage: string;
-    tags: string[];
-    status: BlogPostStatus;
-    publishedAt: string;
-  } | null>(null);
-  const form = draft ?? {
-    categoryId: post?.categoryId ?? "",
-    title: post?.title ?? "",
-    excerpt: post?.excerpt ?? "",
-    body: post?.body ?? "",
-    coverImage: post?.coverImage ?? "",
-    tags: post?.tags ?? [],
-    status: (post?.status as BlogPostStatus | undefined) ?? "draft",
-    publishedAt: toLocalDateTimeInput(post?.publishedAt),
-  };
-  const set = (patch: Partial<typeof form>) => setDraft({ ...form, ...patch });
-
-  const [tagInput, setTagInput] = useState("");
-  const [coverImageFile, setCoverImageFile] = useState<File | null>(null);
-  const [coverImagePreview, setCoverImagePreview] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const addTag = () => {
-    const t = tagInput.trim();
-    if (t && !form.tags.includes(t)) set({ tags: [...form.tags, t] });
-    setTagInput("");
-  };
-
-  const save = useMutation({
-    mutationFn: async () => {
-      const basePayload = {
-        categoryId: form.categoryId,
-        title: form.title.trim(),
-        excerpt: form.excerpt.trim() || null,
-        body: form.body,
-        coverImage: form.coverImage.trim() || null,
-        tags: form.tags,
-      };
-      const publishedAtIso = form.status === "published" && form.publishedAt ? new Date(form.publishedAt).toISOString() : undefined;
-
-      let saved: Schemas["BlogPost"];
-      if (postId) {
-        saved = await api.blog.updatePost(postId, { ...basePayload, status: form.status, ...(publishedAtIso ? { publishedAt: publishedAtIso } : {}) });
-      } else {
-        // A new post always starts as draft server-side (posts.ts's invariant) —
-        // a second PATCH moves it on if the author picked pending/published up front.
-        saved = await api.blog.createPost(basePayload);
-        if (form.status !== "draft") {
-          saved = await api.blog.updatePost(saved.id!, { status: form.status, ...(publishedAtIso ? { publishedAt: publishedAtIso } : {}) });
-        }
-      }
-      if (coverImageFile) {
-        saved = await api.blog.uploadCoverImage(saved.id!, coverImageFile);
-      }
-      return saved;
-    },
-    onSuccess: (p) => {
-      toast.success(postId ? `Updated "${p.title}"` : `Created "${p.title}"`);
-      void queryClient.invalidateQueries({ queryKey: ["blog-posts"] });
-    },
-    onError: onApiError,
-  });
-
-  const saveLabel = form.status === "draft" ? "Save Draft" : form.status === "pending" ? "Submit for Review"
-    : form.publishedAt && new Date(form.publishedAt) > new Date() ? "Schedule" : "Publish";
-
-  return (
-    <FormDrawer
-      open
-      onOpenChange={(v) => { if (!v) onClose(); }}
-      title={postId ? `Edit ${post?.title ?? ""}` : "New Blog Post"}
-      size="lg"
-      saveLabel={saveLabel}
-      onSave={() => {
-        if (!form.categoryId || !form.title.trim() || !form.body.trim()) {
-          toast.error("Category, title and body are required");
-          return;
-        }
-        save.mutate();
-      }}
-    >
-      {postId && isLoading ? (
-        <SkeletonList rows={5} />
-      ) : (
-        <>
-          <FormField label="Title">
-            <Input value={form.title} onChange={(e) => set({ title: e.target.value })} placeholder="Top 10 things to do in Yercaud" />
-          </FormField>
-          <FormField label="Category">
-            <select
-              value={form.categoryId}
-              onChange={(e) => set({ categoryId: e.target.value })}
-              className="w-full h-9 rounded-md border border-slate-200 bg-white px-3 text-sm"
-            >
-              <option value="">Choose a category…</option>
-              {(categories ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </FormField>
-          <FormField label="Cover Image">
-            <div className="flex items-center gap-3">
-              {coverImagePreview || form.coverImage ? (
-                <img src={coverImagePreview ?? form.coverImage} alt="" className="h-16 w-24 rounded-lg object-cover border border-slate-200" />
-              ) : (
-                <div className="h-16 w-24 rounded-lg bg-slate-100 grid place-items-center text-[10px] text-slate-400">No image</div>
-              )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0] ?? null;
-                  setCoverImageFile(file);
-                  setCoverImagePreview(file ? URL.createObjectURL(file) : null);
-                }}
-              />
-              <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
-                <ImagePlus className="w-3.5 h-3.5 mr-1" /> Choose Image
-              </Button>
-            </div>
-          </FormField>
-          <FormField label="Tags">
-            <div className="flex flex-wrap gap-1.5 mb-2 empty:mb-0">
-              {form.tags.map((t) => (
-                <span key={t} className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 pl-2.5 pr-1 py-0.5 text-xs text-slate-700">
-                  {t}
-                  <button
-                    onClick={() => set({ tags: form.tags.filter((x) => x !== t) })}
-                    className="rounded-full p-0.5 hover:bg-slate-200 text-slate-500 hover:text-red-600"
-                    aria-label={`Remove tag ${t}`}
-                  >
-                    <X className="w-2.5 h-2.5" />
-                  </button>
-                </span>
-              ))}
-            </div>
-            <Input
-              value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
-              placeholder="Type a tag and press Enter"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); addTag(); }
-              }}
-            />
-          </FormField>
-          <FormField label="Excerpt">
-            <Textarea rows={2} value={form.excerpt} onChange={(e) => set({ excerpt: e.target.value })} />
-          </FormField>
-          <FormField label="Body">
-            <Tabs defaultValue="write">
-              <TabsList>
-                <TabsTrigger value="write">Write</TabsTrigger>
-                <TabsTrigger value="preview">Preview</TabsTrigger>
-              </TabsList>
-              <TabsContent value="write" className="pt-2">
-                <Textarea rows={12} value={form.body} onChange={(e) => set({ body: e.target.value })} placeholder="Write your post in Markdown…" />
-              </TabsContent>
-              <TabsContent value="preview" className="pt-2">
-                <div className="prose prose-sm max-w-none rounded-md border border-slate-200 p-3 min-h-[240px]">
-                  <ReactMarkdown>{form.body || "*Nothing to preview yet.*"}</ReactMarkdown>
-                </div>
-              </TabsContent>
-            </Tabs>
-          </FormField>
-          <FormField label="Status">
-            <select
-              value={form.status}
-              onChange={(e) => {
-                const nextStatus = e.target.value as BlogPostStatus;
-                // Defaults the schedule field to "now" the moment Published is
-                // picked, so an untouched field still means "publish immediately".
-                set({ status: nextStatus, publishedAt: nextStatus === "published" && !form.publishedAt ? toLocalDateTimeInput(new Date().toISOString()) : form.publishedAt });
-              }}
-              className="w-full h-9 rounded-md border border-slate-200 bg-white px-3 text-sm"
-            >
-              <option value="draft">Draft</option>
-              <option value="pending">Pending Review</option>
-              <option value="published">Published</option>
-            </select>
-          </FormField>
-          {form.status === "published" && (
-            <FormField label="Publish Date">
-              <Input type="datetime-local" value={form.publishedAt} onChange={(e) => set({ publishedAt: e.target.value })} />
-            </FormField>
-          )}
-        </>
-      )}
-    </FormDrawer>
   );
 }
 

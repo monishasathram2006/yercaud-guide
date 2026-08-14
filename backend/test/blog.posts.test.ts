@@ -374,4 +374,85 @@ describe("Blog Posts", () => {
       expect(patch.json().ogImage).toBeNull();
     });
   });
+
+  // The full-page editor's Permalink/Focus Keyword/Canonical URL/Visibility
+  // fields — added alongside the OG/Twitter fields above, same shape.
+  describe("Permalink, focus keyword, canonical URL, and visibility", () => {
+    it("derives the slug from the title when no explicit slug is given (existing behavior, unchanged)", async () => {
+      const { adminCookie, categoryId } = await setup(ctx);
+      const create = await ctx.app.inject({ method: "POST", url: "/blog-posts", headers: { cookie: adminCookie }, payload: { ...POST, categoryId } });
+      expect(create.json().slug).toBe("a-weekend-in-yercaud");
+    });
+
+    it("honours an explicit slug override on create, de-duping on collision", async () => {
+      const { adminCookie, categoryId } = await setup(ctx);
+      const first = await ctx.app.inject({ method: "POST", url: "/blog-posts", headers: { cookie: adminCookie }, payload: { ...POST, categoryId, slug: "custom-permalink" } });
+      expect(first.json().slug).toBe("custom-permalink");
+
+      const second = await ctx.app.inject({ method: "POST", url: "/blog-posts", headers: { cookie: adminCookie }, payload: { ...POST, categoryId, title: "Different Title", slug: "custom-permalink" } });
+      expect(second.json().slug).toBe("custom-permalink-2");
+    });
+
+    it("lets a PATCH set an explicit slug without touching the title, and re-editing the title afterwards leaves that slug alone", async () => {
+      const { adminCookie, categoryId } = await setup(ctx);
+      const create = await ctx.app.inject({ method: "POST", url: "/blog-posts", headers: { cookie: adminCookie }, payload: { ...POST, categoryId } });
+      const postId = create.json().id;
+
+      const rename = await ctx.app.inject({ method: "PATCH", url: `/blog-posts/${postId}`, headers: { cookie: adminCookie }, payload: { slug: "hand-picked-slug" } });
+      expect(rename.json().slug).toBe("hand-picked-slug");
+      expect(rename.json().title).toBe(POST.title);
+
+      // A later PATCH that doesn't touch slug or title must leave the hand-picked slug alone.
+      const unrelated = await ctx.app.inject({ method: "PATCH", url: `/blog-posts/${postId}`, headers: { cookie: adminCookie }, payload: { excerpt: "New excerpt" } });
+      expect(unrelated.json().slug).toBe("hand-picked-slug");
+    });
+
+    it("round-trips focusKeyword and canonicalUrl, and defaults both to null", async () => {
+      const { adminCookie, categoryId } = await setup(ctx);
+      const create = await ctx.app.inject({
+        method: "POST",
+        url: "/blog-posts",
+        headers: { cookie: adminCookie },
+        payload: { ...POST, categoryId, focusKeyword: "yercaud monsoon", canonicalUrl: "https://yercaudguide.com/blog/canonical" },
+      });
+      expect(create.json()).toMatchObject({ focusKeyword: "yercaud monsoon", canonicalUrl: "https://yercaudguide.com/blog/canonical" });
+
+      const bare = await ctx.app.inject({ method: "POST", url: "/blog-posts", headers: { cookie: adminCookie }, payload: { ...POST, categoryId, title: "Bare Post" } });
+      expect(bare.json()).toMatchObject({ focusKeyword: null, canonicalUrl: null });
+    });
+
+    it("defaults visibility to public, and a private+published post 404s for an anonymous caller but is visible to an admin", async () => {
+      const { adminCookie, categoryId } = await setup(ctx);
+      const create = await ctx.app.inject({ method: "POST", url: "/blog-posts", headers: { cookie: adminCookie }, payload: { ...POST, categoryId } });
+      expect(create.json().visibility).toBe("public");
+      const postId = create.json().id;
+
+      const patch = await ctx.app.inject({ method: "PATCH", url: `/blog-posts/${postId}`, headers: { cookie: adminCookie }, payload: { status: "published", visibility: "private" } });
+      expect(patch.json()).toMatchObject({ status: "published", visibility: "private" });
+
+      const anon = await ctx.app.inject({ method: "GET", url: `/blog-posts/${postId}` });
+      expect(anon.statusCode).toBe(404);
+
+      const admin = await ctx.app.inject({ method: "GET", url: `/blog-posts/${postId}`, headers: { cookie: adminCookie } });
+      expect(admin.statusCode).toBe(200);
+
+      // Same rule in the public list — a private post never appears there either.
+      const anonList = await ctx.app.inject({ method: "GET", url: "/blog-posts" });
+      expect(anonList.json()).toHaveLength(0);
+    });
+
+    it("carries focusKeyword into a duplicate, but resets canonicalUrl and visibility", async () => {
+      const { adminCookie, categoryId } = await setup(ctx);
+      const create = await ctx.app.inject({
+        method: "POST",
+        url: "/blog-posts",
+        headers: { cookie: adminCookie },
+        payload: { ...POST, categoryId, focusKeyword: "yercaud monsoon", canonicalUrl: "https://yercaudguide.com/blog/original" },
+      });
+      await ctx.app.inject({ method: "PATCH", url: `/blog-posts/${create.json().id}`, headers: { cookie: adminCookie }, payload: { visibility: "private" } });
+
+      const dup = await ctx.app.inject({ method: "POST", url: `/blog-posts/${create.json().id}/duplicate`, headers: { cookie: adminCookie } });
+      expect(dup.json()).toMatchObject({ focusKeyword: "yercaud monsoon", canonicalUrl: null, visibility: "public" });
+    });
+  });
 });

@@ -32,6 +32,13 @@ const postFields = {
   // an unknown card type at write time beats discovering at share time that the
   // meta tag was ignored.
   twitterCard: { type: "string", enum: TWITTER_CARD_TYPES, nullable: true },
+  focusKeyword: { type: "string", nullable: true },
+  canonicalUrl: { type: "string", nullable: true },
+  visibility: { type: "string", enum: ["public", "private"] },
+  // Sanitized through the same slugify() uniqueSlug already runs title
+  // through — no pattern validation needed here, any string comes out
+  // URL-safe on the other side.
+  slug: { type: "string", minLength: 1 },
   relatedPostIds: { type: "array", items: { type: "string", format: "uuid" } },
   placeListingIds: { type: "array", items: { type: "string", format: "uuid" } },
   tags: { type: "array", items: { type: "string", minLength: 1 } },
@@ -105,10 +112,15 @@ export function registerBlogPostRoutes(app: FastifyInstance, deps: Required<AppD
     },
   );
 
-  async function assertVisible(request: FastifyRequest, post: { status: string; publishedAt: string | null }): Promise<void> {
+  async function assertVisible(request: FastifyRequest, post: { status: string; publishedAt: string | null; visibility: string }): Promise<void> {
     // A scheduled post (status='published', publishedAt in the future) isn't
-    // actually live yet — same rule listBlogPosts' public branch enforces.
-    const isLive = post.status === "published" && post.publishedAt !== null && new Date(post.publishedAt) <= new Date();
+    // actually live yet, and a private post never is — same rule
+    // listBlogPosts' public branch enforces.
+    const isLive =
+      post.status === "published" &&
+      post.visibility === "public" &&
+      post.publishedAt !== null &&
+      new Date(post.publishedAt) <= new Date();
     if (isLive) return;
     const callerId = request.currentUser?.id;
     const isAdmin = callerId ? await userHasPermission(deps.db, callerId, "Content", "view") : false;

@@ -6053,6 +6053,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/blog-posts/{postId}/social-image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                postId: components["parameters"]["PostId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload a blog post's social share image (the og_image/Open Graph card image — a second, independent image from the cover image) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    postId: components["parameters"]["PostId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "multipart/form-data": {
+                        /** Format: binary */
+                        file?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BlogPost"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/blog-posts/{postId}/comments": {
         parameters: {
             query?: never;
@@ -7660,6 +7710,10 @@ export interface components {
             ogImage: string | null;
             /** @enum {string|null} */
             twitterCard: "summary" | "summary_large_image" | "app" | "player" | null;
+            focusKeyword: string | null;
+            canonicalUrl: string | null;
+            /** @enum {string} */
+            visibility: "public" | "private";
             relatedPostIds: string[];
             placeListingIds: string[];
         };
@@ -7667,6 +7721,7 @@ export interface components {
             /** Format: uuid */
             categoryId: string;
             title: string;
+            slug?: string;
             excerpt?: string | null;
             body: string;
             coverImage?: string | null;
@@ -7675,6 +7730,10 @@ export interface components {
             ogImage?: string | null;
             /** @enum {string|null} */
             twitterCard?: "summary" | "summary_large_image" | "app" | "player" | null;
+            focusKeyword?: string | null;
+            canonicalUrl?: string | null;
+            /** @enum {string} */
+            visibility?: "public" | "private";
             relatedPostIds?: string[];
             placeListingIds?: string[];
             tags?: string[];
@@ -7683,11 +7742,16 @@ export interface components {
             /** Format: uuid */
             categoryId?: string;
             title?: string;
+            slug?: string;
             excerpt?: string | null;
             body?: string;
             coverImage?: string | null;
             seoTitle?: string | null;
             seoDescription?: string | null;
+            focusKeyword?: string | null;
+            canonicalUrl?: string | null;
+            /** @enum {string} */
+            visibility?: "public" | "private";
             relatedPostIds?: string[];
             placeListingIds?: string[];
             tags?: string[];

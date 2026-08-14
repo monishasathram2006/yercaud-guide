@@ -9,6 +9,8 @@ import { resolveTagIds } from "./tags.js";
 import type { TwitterCardType } from "../listings/service.js";
 
 export type BlogPostStatus = "draft" | "pending" | "published";
+/** A second, independent gate alongside `status` — a published+private post is reachable by an admin but never publicly listed or fetchable (like an unlisted video). */
+export type BlogPostVisibility = "public" | "private";
 
 export interface BlogPostSummary {
   id: string;
@@ -41,6 +43,9 @@ export interface BlogPost extends BlogPostSummary {
    */
   ogImage: string | null;
   twitterCard: TwitterCardType | null;
+  focusKeyword: string | null;
+  canonicalUrl: string | null;
+  visibility: BlogPostVisibility;
   relatedPostIds: string[];
   placeListingIds: string[];
 }
@@ -67,6 +72,9 @@ interface BlogPostRow {
   seo_description: string | null;
   og_image: string | null;
   twitter_card: TwitterCardType | null;
+  focus_keyword: string | null;
+  canonical_url: string | null;
+  visibility: BlogPostVisibility;
 }
 
 // Aliased so joins/subqueries below can reference p.id without ambiguity —
@@ -80,7 +88,8 @@ const SUMMARY_COLUMNS = `p.id, p.title, p.slug, p.excerpt, p.cover_image, p.cate
   (SELECT COALESCE(ARRAY_AGG(t.name ORDER BY t.name), '{}')
      FROM blog_post_tags bpt JOIN blog_tags t ON t.id = bpt.tag_id
     WHERE bpt.post_id = p.id) AS tags`;
-const FULL_COLUMNS = `${SUMMARY_COLUMNS}, p.body, p.seo_title, p.seo_description, p.og_image, p.twitter_card`;
+const FULL_COLUMNS = `${SUMMARY_COLUMNS}, p.body, p.seo_title, p.seo_description, p.og_image, p.twitter_card,
+  p.focus_keyword, p.canonical_url, p.visibility`;
 
 function toSummary(row: BlogPostRow): BlogPostSummary {
   return {
@@ -126,6 +135,9 @@ async function toBlogPost(db: pg.Pool, row: BlogPostRow): Promise<BlogPost> {
     seoDescription: row.seo_description,
     ogImage: row.og_image,
     twitterCard: row.twitter_card,
+    focusKeyword: row.focus_keyword,
+    canonicalUrl: row.canonical_url,
+    visibility: row.visibility,
     relatedPostIds,
     placeListingIds,
   };
@@ -210,6 +222,11 @@ export interface BlogPostInput {
   /** A URL to an already-hosted image, not an upload — same as a Listing's. */
   ogImage?: string | null;
   twitterCard?: TwitterCardType | null;
+  focusKeyword?: string | null;
+  canonicalUrl?: string | null;
+  visibility?: BlogPostVisibility;
+  /** Explicit permalink override — when absent, the slug is derived from the title (uniqueSlug), same as always. */
+  slug?: string;
   relatedPostIds?: string[];
   placeListingIds?: string[];
   /** Tag names (freeform) — resolved to ids via get-or-create, same shape as categoryId but many and unmoderated. */
@@ -225,11 +242,12 @@ async function applyTags(db: pg.Pool, postId: string, tags: string[] | undefined
 /** Always starts at the column's `draft` default — status is never settable on create. */
 export async function createBlogPost(db: pg.Pool, authorId: string, input: BlogPostInput): Promise<BlogPost> {
   await assertLinksValid(db, undefined, input.relatedPostIds, input.placeListingIds);
-  const slug = await uniqueSlug(db, input.title);
+  const slug = await uniqueSlug(db, input.slug ?? input.title);
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO blog_posts (author_id, category_id, title, slug, excerpt, body, cover_image,
-       reading_time_minutes, seo_title, seo_description, og_image, twitter_card)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       reading_time_minutes, seo_title, seo_description, og_image, twitter_card,
+       focus_keyword, canonical_url, visibility)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
      RETURNING id`,
     [
       authorId,
@@ -244,6 +262,9 @@ export async function createBlogPost(db: pg.Pool, authorId: string, input: BlogP
       input.seoDescription ?? null,
       input.ogImage ?? null,
       input.twitterCard ?? null,
+      input.focusKeyword ?? null,
+      input.canonicalUrl ?? null,
+      input.visibility ?? "public",
     ],
   );
   const postId = rows[0].id;
@@ -283,9 +304,13 @@ export async function updateBlogPost(db: pg.Pool, id: string, input: UpdateBlogP
   await assertLinksValid(db, id, input.relatedPostIds, input.placeListingIds);
   const nextBody = input.body ?? current.body;
   const nextTitle = input.title ?? current.title;
-  // Retitling re-slugs: the slug is derived from the title, so leaving it
-  // stale would make it lie about its own post.
-  const slug = input.title !== undefined ? await uniqueSlug(db, nextTitle, id) : current.slug;
+  // An explicit slug (permalink edit) wins outright. Otherwise, retitling
+  // re-slugs: the slug is derived from the title, so leaving it stale would
+  // make it lie about its own post.
+  const slug =
+    input.slug !== undefined ? await uniqueSlug(db, input.slug, id)
+    : input.title !== undefined ? await uniqueSlug(db, nextTitle, id)
+    : current.slug;
 
   // Three cases for published_at, in order:
   //  1. Not becoming 'published' this write — leave it alone.
@@ -302,7 +327,8 @@ export async function updateBlogPost(db: pg.Pool, id: string, input: UpdateBlogP
          WHEN published_at IS NOT NULL AND published_at <= NOW() THEN published_at
          ELSE COALESCE($14::timestamptz, NOW())
        END,
-       og_image = $12, twitter_card = $13
+       og_image = $12, twitter_card = $13,
+       focus_keyword = $15, canonical_url = $16, visibility = $17
      WHERE id = $11`,
     [
       input.categoryId ?? current.categoryId,
@@ -321,6 +347,9 @@ export async function updateBlogPost(db: pg.Pool, id: string, input: UpdateBlogP
       input.ogImage === undefined ? current.ogImage : input.ogImage,
       input.twitterCard === undefined ? current.twitterCard : input.twitterCard,
       input.publishedAt ?? null,
+      input.focusKeyword === undefined ? current.focusKeyword : input.focusKeyword,
+      input.canonicalUrl === undefined ? current.canonicalUrl : input.canonicalUrl,
+      input.visibility ?? current.visibility,
     ],
   );
   await replaceLinks(db, id, input.relatedPostIds, input.placeListingIds);
@@ -353,10 +382,15 @@ export async function deleteBlogPost(db: pg.Pool, id: string): Promise<void> {
 
 /**
  * Clones a post into a new draft — title suffixed " (Copy)", re-slugged,
- * status/published_at reset to the column defaults (draft/null). Attributed
- * to whoever clicked Duplicate, not the original author. Curated links
- * (relatedPostIds/placeListingIds) are deliberately NOT copied — a clean
- * copy shouldn't inherit editorial links to the post it was copied from.
+ * status/published_at reset to the column defaults (draft/null), visibility
+ * reset to the column default ('public' — harmless while still a draft, since
+ * status already keeps it unlisted). Attributed to whoever clicked Duplicate,
+ * not the original author. Curated links (relatedPostIds/placeListingIds) are
+ * deliberately NOT copied — a clean copy shouldn't inherit editorial links to
+ * the post it was copied from. canonicalUrl is likewise NOT copied — two
+ * posts both claiming the same canonical URL would be an SEO footgun;
+ * focusKeyword IS copied, alongside the other SEO text fields, since it's
+ * just content, not a link or a uniqueness claim.
  */
 export async function duplicateBlogPost(db: pg.Pool, id: string, authorId: string): Promise<BlogPost> {
   const source = await getBlogPost(db, id);
@@ -364,8 +398,8 @@ export async function duplicateBlogPost(db: pg.Pool, id: string, authorId: strin
   const slug = await uniqueSlug(db, title);
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO blog_posts (author_id, category_id, title, slug, excerpt, body, cover_image,
-       reading_time_minutes, seo_title, seo_description, og_image, twitter_card)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       reading_time_minutes, seo_title, seo_description, og_image, twitter_card, focus_keyword)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING id`,
     [
       authorId,
@@ -380,6 +414,7 @@ export async function duplicateBlogPost(db: pg.Pool, id: string, authorId: strin
       source.seoDescription,
       source.ogImage,
       source.twitterCard,
+      source.focusKeyword,
     ],
   );
   const newId = rows[0].id;
@@ -427,7 +462,7 @@ export async function listBlogPosts(db: pg.Pool, options: ListBlogPostsOptions):
     // isn't actually live yet — same rule assertVisible enforces for GET by
     // id/slug. Pull-based site: this re-evaluates on every page load, no
     // cron needed for a scheduled post to "go live".
-    conditions.push(`p.status = 'published' AND p.published_at <= NOW()`);
+    conditions.push(`p.status = 'published' AND p.published_at <= NOW() AND p.visibility = 'public'`);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

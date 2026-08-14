@@ -99,10 +99,15 @@ async function transitionStatus(
   return toBlogComment(rows[0]);
 }
 
+// A moderator can reverse their own earlier call (approved -> rejected, or
+// rejected -> approved) — the admin UI offers both actions regardless of the
+// comment's current status, so the backend needs to actually honor a reversal
+// rather than 409 on the exact case the UI invites. Re-applying the same
+// status is still blocked (a true no-op, not a reversal).
 export async function approveComment(db: pg.Pool, id: string): Promise<BlogComment> {
-  return transitionStatus(db, id, ["pending"], "approved");
+  return transitionStatus(db, id, ["pending", "rejected"], "approved");
 }
 
 export async function rejectComment(db: pg.Pool, id: string): Promise<BlogComment> {
-  return transitionStatus(db, id, ["pending"], "rejected");
+  return transitionStatus(db, id, ["pending", "approved"], "rejected");
 }

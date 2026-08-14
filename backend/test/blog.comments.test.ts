@@ -110,7 +110,7 @@ describe("Blog Comments", () => {
     expect(publicList.json()).toHaveLength(0);
   });
 
-  it("409s an invalid transition (approving an already-approved comment)", async () => {
+  it("409s a no-op transition (approving an already-approved comment, or rejecting an already-rejected one)", async () => {
     const { adminCookie, createPost } = await setup(ctx);
     const { cookie: visitorCookie } = await registerAndGetCookie(ctx, "visitor4@example.com");
     const postId = await createPost("Post");
@@ -125,6 +125,39 @@ describe("Blog Comments", () => {
 
     const again = await ctx.app.inject({ method: "POST", url: `/blog-comments/${commentId}/approve`, headers: { cookie: adminCookie } });
     expect(again.statusCode).toBe(409);
+
+    await ctx.app.inject({ method: "POST", url: `/blog-comments/${commentId}/reject`, headers: { cookie: adminCookie } });
+    const rejectAgain = await ctx.app.inject({ method: "POST", url: `/blog-comments/${commentId}/reject`, headers: { cookie: adminCookie } });
+    expect(rejectAgain.statusCode).toBe(409);
+  });
+
+  it("lets a moderator reverse their own call in either direction (approved -> rejected, rejected -> approved)", async () => {
+    const { adminCookie, createPost } = await setup(ctx);
+    const { cookie: visitorCookie } = await registerAndGetCookie(ctx, "visitor4b@example.com");
+    const postId = await createPost("Post");
+    const submit = await ctx.app.inject({
+      method: "POST",
+      url: `/blog-posts/${postId}/comments`,
+      headers: { cookie: visitorCookie },
+      payload: { body: "Second thoughts" },
+    });
+    const commentId = submit.json().id;
+
+    const approve = await ctx.app.inject({ method: "POST", url: `/blog-comments/${commentId}/approve`, headers: { cookie: adminCookie } });
+    expect(approve.json().status).toBe("approved");
+
+    const reject = await ctx.app.inject({ method: "POST", url: `/blog-comments/${commentId}/reject`, headers: { cookie: adminCookie } });
+    expect(reject.statusCode).toBe(200);
+    expect(reject.json().status).toBe("rejected");
+    // A comment moved back out of approved must stop showing publicly.
+    const afterReject = await ctx.app.inject({ method: "GET", url: `/blog-posts/${postId}/comments` });
+    expect(afterReject.json()).toHaveLength(0);
+
+    const reapprove = await ctx.app.inject({ method: "POST", url: `/blog-comments/${commentId}/approve`, headers: { cookie: adminCookie } });
+    expect(reapprove.statusCode).toBe(200);
+    expect(reapprove.json().status).toBe("approved");
+    const afterReapprove = await ctx.app.inject({ method: "GET", url: `/blog-posts/${postId}/comments` });
+    expect(afterReapprove.json()).toHaveLength(1);
   });
 
   it("gives a Super Admin a cross-post moderation queue, filtered by status", async () => {

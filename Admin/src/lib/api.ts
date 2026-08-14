@@ -244,6 +244,7 @@ export const api = {
     publishPost: (id: string) => apiFetch<Schemas["BlogPost"]>(`/blog-posts/${id}/publish`, { method: "POST" }),
     duplicatePost: (id: string) => apiFetch<Schemas["BlogPost"]>(`/blog-posts/${id}/duplicate`, { method: "POST" }),
     uploadCoverImage: (id: string, file: File) => apiUpload<Schemas["BlogPost"]>(`/blog-posts/${id}/cover-image`, file),
+    uploadSocialImage: (id: string, file: File) => apiUpload<Schemas["BlogPost"]>(`/blog-posts/${id}/social-image`, file),
     comments: (query: { status?: string } = {}, signal?: AbortSignal) => apiFetch<Schemas["BlogComment"][]>("/blog-comments", { query, signal }),
     approveComment: (id: string) => apiFetch<void>(`/blog-comments/${id}/approve`, { method: "POST" }),
     rejectComment: (id: string) => apiFetch<void>(`/blog-comments/${id}/reject`, { method: "POST" }),

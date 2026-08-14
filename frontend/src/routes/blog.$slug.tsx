@@ -2,6 +2,8 @@ import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 import { PageShell, Breadcrumbs } from "@/components/PageShell";
 import { BlogNewsletterBox } from "@/components/BlogNewsletterBox";
 import { api, isNotFound, type BlogPost, type Listing } from "@/lib/api";
@@ -143,7 +145,10 @@ function BlogDetail() {
             />
           )}
           <div className="prose prose-sm mt-6 max-w-none text-gray-700">
-            <ReactMarkdown>{post.body}</ReactMarkdown>
+            {/* remarkGfm: tables/strikethrough/autolinks (CommonMark alone doesn't have these).
+                rehypeRaw: lets the editor's Underline/Video toolbar buttons, which have no
+                Markdown syntax, embed real <u>/<video> tags that actually render here. */}
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{post.body}</ReactMarkdown>
           </div>
 
           {/*

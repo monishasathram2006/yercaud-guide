@@ -12,6 +12,7 @@ import { UsersPage, OwnersPage, AdminsPage, RolesPage } from "./pages/People";
 import { CategoriesPage, LocationsPage, BadgesPage } from "./pages/Taxonomies";
 import { PromotionsPage, SponsoredPage, BannersPage } from "./pages/Marketing";
 import { BlogPage, BlogCommentsPage, FAQPage, StaticPagesPage, NewsletterPage } from "./pages/Content";
+import { BlogPostEditor } from "./pages/BlogPostEditor";
 import { BusinessProfilePage, TeamPage } from "./pages/Business";
 import { AuditLogPage } from "./pages/AuditLog";
 import {
@@ -57,6 +58,7 @@ const ROUTES: Record<string, { render: () => ReactElement; module?: string }> = 
   "/featured": { render: () => <SponsoredPage />, module: "Marketing" },
   "/banners": { render: () => <BannersPage />, module: "Marketing" },
   "/blog": { render: () => <BlogPage />, module: "Content" },
+  "/blog/new": { render: () => <BlogPostEditor />, module: "Content" },
   "/blog-comments": { render: () => <BlogCommentsPage />, module: "Content" },
   "/faq": { render: () => <FAQPage />, module: "Content" },
   "/pages": { render: () => <StaticPagesPage />, module: "Content" },
@@ -81,6 +83,14 @@ export function AdminRouter({ path: fallback }: { path?: string }) {
   const isPlatformAdmin = canAccess("Admins");
 
   if (path === "/dashboard") return isPlatformAdmin ? <DashboardSuper /> : <DashboardOwner />;
+
+  // /blog/:id/edit carries a dynamic id, so it can't be a static ROUTES key
+  // like /blog/new — matched here instead, same module gate as /blog itself.
+  const editMatch = path.match(/^\/blog\/([^/]+)\/edit$/);
+  if (editMatch) {
+    if (!canAccess("Content")) return <NoAccess />;
+    return <BlogPostEditor postId={editMatch[1]} />;
+  }
 
   const route = ROUTES[path];
   if (!route) return isPlatformAdmin ? <DashboardSuper /> : <DashboardOwner />;

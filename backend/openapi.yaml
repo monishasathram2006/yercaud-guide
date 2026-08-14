@@ -2718,6 +2718,29 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /blog-posts/{postId}/social-image:
+    parameters: [{ $ref: '#/components/parameters/PostId' }]
+    post:
+      tags: [Blog]
+      summary: Upload a blog post's social share image (the og_image/Open Graph card image — a second, independent image from the cover image)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /blog-posts/{postId}/comments:
     parameters: [{ $ref: '#/components/parameters/PostId' }]
     get:
@@ -4210,6 +4233,9 @@ components:
             - seoDescription
             - ogImage
             - twitterCard
+            - focusKeyword
+            - canonicalUrl
+            - visibility
             - relatedPostIds
             - placeListingIds
           properties:
@@ -4226,18 +4252,25 @@ components:
               type: string
               nullable: true
               enum: [summary, summary_large_image, app, player]
+            focusKeyword: { type: string, nullable: true }
+            canonicalUrl: { type: string, nullable: true }
+            # A second, independent gate alongside status — a published+private
+            # post 404s for anonymous callers, same as an unpublished one.
+            visibility: { type: string, enum: [public, private] }
             relatedPostIds: { type: array, items: { type: string, format: uuid } }
             placeListingIds: { type: array, items: { type: string, format: uuid } }
-    # `slug`, `readingTimeMinutes`, `authorId`, `status`, and `publishedAt` are
-    # all absent by design: the first two are derived server-side from title
-    # and body, authorId comes from the session, and status only moves via
-    # PATCH or /publish. A new post always starts as 'draft'.
+    # `readingTimeMinutes`, `authorId`, `status`, and `publishedAt` are absent
+    # by design: readingTimeMinutes is derived server-side from body, authorId
+    # comes from the session, and status only moves via PATCH or /publish. A
+    # new post always starts as 'draft'. `slug` IS present (optional) — an
+    # explicit permalink override; omitted, it's still derived from title.
     BlogPostInput:
       type: object
       required: [categoryId, title, body]
       properties:
         categoryId: { type: string, format: uuid }
         title: { type: string }
+        slug: { type: string }
         excerpt: { type: string, nullable: true }
         body: { type: string }
         coverImage: { type: string, nullable: true }
@@ -4249,6 +4282,9 @@ components:
           type: string
           nullable: true
           enum: [summary, summary_large_image, app, player]
+        focusKeyword: { type: string, nullable: true }
+        canonicalUrl: { type: string, nullable: true }
+        visibility: { type: string, enum: [public, private] }
         # A post may not relate to itself (400).
         relatedPostIds: { type: array, items: { type: string, format: uuid } }
         # Every id must be an approved Listing (400) — a published article must
@@ -4261,11 +4297,15 @@ components:
       properties:
         categoryId: { type: string, format: uuid }
         title: { type: string }
+        slug: { type: string }
         excerpt: { type: string, nullable: true }
         body: { type: string }
         coverImage: { type: string, nullable: true }
         seoTitle: { type: string, nullable: true }
         seoDescription: { type: string, nullable: true }
+        focusKeyword: { type: string, nullable: true }
+        canonicalUrl: { type: string, nullable: true }
+        visibility: { type: string, enum: [public, private] }
         relatedPostIds: { type: array, items: { type: string, format: uuid } }
         placeListingIds: { type: array, items: { type: string, format: uuid } }
         tags: { type: array, items: { type: string } }
