@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { PageShell, Breadcrumbs } from "@/components/PageShell";
 import { BlogNewsletterBox } from "@/components/BlogNewsletterBox";
-import { api, isNotFound, type BlogPost, type Listing } from "@/lib/api";
+import { api, isNotFound, resolveUploadUrl, type BlogPost, type Listing } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { detailPath, formatPrice } from "@/lib/listing-display";
 import { categoryColor } from "@/lib/blog-category-colors";
@@ -139,7 +139,7 @@ function BlogDetail() {
           </div>
           {post.coverImage && (
             <img
-              src={post.coverImage}
+              src={resolveUploadUrl(post.coverImage) ?? undefined}
               alt=""
               className="mt-6 h-80 w-full rounded-2xl object-cover"
             />
@@ -296,7 +296,7 @@ function BlogDetail() {
                     className="overflow-hidden rounded-xl border border-gray-100 bg-white"
                   >
                     {r.coverImage ? (
-                      <img src={r.coverImage} alt="" className="h-32 w-full object-cover" />
+                      <img src={resolveUploadUrl(r.coverImage) ?? undefined} alt="" className="h-32 w-full object-cover" />
                     ) : (
                       <div className="h-32 w-full bg-gray-100" />
                     )}

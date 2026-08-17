@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { Clock } from "lucide-react";
-import type { BlogPostSummary } from "@/lib/api";
+import { resolveUploadUrl, type BlogPostSummary } from "@/lib/api";
 import { categoryColor } from "@/lib/blog-category-colors";
 
 /**
@@ -21,7 +21,7 @@ export function BlogPostCard({ post, categoryName }: { post: BlogPostSummary; ca
       <div className="aspect-[16/10] overflow-hidden bg-gray-100">
         {post.coverImage ? (
           <img
-            src={post.coverImage}
+            src={resolveUploadUrl(post.coverImage) ?? undefined}
             alt=""
             loading="lazy"
             className="h-full w-full object-cover transition group-hover:scale-105"

@@ -14,7 +14,7 @@ import { ArrowLeft, Eye, Send, UploadCloud, X } from "lucide-react";
 import { SkeletonList } from "../components/primitives";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
 import { RelatedListingsPicker } from "../components/RelatedListingsPicker";
-import { api, PUBLIC_SITE_URL, type Schemas } from "@/lib/api";
+import { api, PUBLIC_SITE_URL, resolveUploadUrl, type Schemas } from "@/lib/api";
 import { onApiError } from "../queries";
 
 /** Mirrors the backend's assertValidBlogCoverImageFile — reject bad files before the round trip, not after. Same rule for both the Featured and Social Share images. */
@@ -425,7 +425,7 @@ export function BlogPostEditor({ postId }: { postId?: string }) {
                   <ImageDropzone
                     label="Social share image"
                     hint="Recommended 1200 x 630px, JPG/PNG/WebP, Max 4MB"
-                    currentUrl={post?.ogImage}
+                    currentUrl={resolveUploadUrl(post?.ogImage)}
                     file={socialImageFile}
                     preview={socialImagePreview}
                     compact
@@ -504,7 +504,7 @@ export function BlogPostEditor({ postId }: { postId?: string }) {
             <ImageDropzone
               label="Featured image"
               hint="Recommended 1200 x 630px (16:9), JPG/PNG/WebP, Max 4MB"
-              currentUrl={post?.coverImage}
+              currentUrl={resolveUploadUrl(post?.coverImage)}
               file={coverImageFile}
               preview={coverImagePreview}
               onFile={(f) => {

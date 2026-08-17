@@ -11,7 +11,7 @@ import { Plus, Download, Check, X, Send, Copy, Eye, EyeOff } from "lucide-react"
 import { PageHeader, SectionCard, StatusBadge, SkeletonList, EmptyState, fmtDate } from "../components/primitives";
 import { DataTable } from "../components/DataTable";
 import { FormDrawer } from "../components/FormDrawer";
-import { api, PUBLIC_SITE_URL, type BlogPostSummary, type Schemas } from "@/lib/api";
+import { api, PUBLIC_SITE_URL, resolveUploadUrl, type BlogPostSummary, type Schemas } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { onApiError } from "../queries";
 
@@ -142,7 +142,7 @@ export function BlogPage() {
               columns={[
                 { key: "title", header: "Title", sortable: true, accessor: (r) => r.title ?? "", render: (r) => (
                   <div className="flex items-center gap-3">
-                    {r.coverImage && <img src={r.coverImage} className="w-9 h-9 rounded-lg object-cover" alt="" />}
+                    {r.coverImage && <img src={resolveUploadUrl(r.coverImage) ?? undefined} className="w-9 h-9 rounded-lg object-cover" alt="" />}
                     <span className="font-medium">{r.title}</span>
                   </div>
                 ) },

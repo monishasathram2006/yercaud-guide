@@ -41,6 +41,19 @@ const API_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
 /** The public site's origin — used only by the Blog "Preview" action to open a post's live URL. */
 export const PUBLIC_SITE_URL = import.meta.env.VITE_PUBLIC_SITE_URL ?? "http://localhost:5173";
 
+/**
+ * A locally-uploaded image (cover image, listing photo, logo) comes back from
+ * the API as a root-relative "/uploads/..." path — served by the backend
+ * (:4000), not this app (:5174). Rendered as-is, the browser resolves it
+ * against this app's own origin instead, 404ing. Mirrors frontend/src/lib/api.ts's
+ * resolveUploadUrl (issue #14) — every other image URL (mock Unsplash URLs,
+ * Google avatars) is already absolute and passes through unchanged.
+ */
+export function resolveUploadUrl(url: string | null | undefined): string | null {
+  if (!url || !url.startsWith("/")) return url ?? null;
+  return `${API_URL.replace(/\/$/, "")}${url}`;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,

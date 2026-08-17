@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { PageShell, Breadcrumbs } from "@/components/PageShell";
 import { BlogNewsletterBox } from "@/components/BlogNewsletterBox";
 import { HERO_IMG } from "@/lib/data";
-import { api, type BlogPostSummary } from "@/lib/api";
+import { api, resolveUploadUrl, type BlogPostSummary } from "@/lib/api";
 import { categoryColor } from "@/lib/blog-category-colors";
 import { Search, Calendar, Clock, ChevronLeft, ChevronRight, Layers, Send } from "lucide-react";
 
@@ -212,7 +212,7 @@ function BlogList() {
                   <li key={p.id} className="flex gap-2">
                     {p.coverImage ? (
                       <img
-                        src={p.coverImage}
+                        src={resolveUploadUrl(p.coverImage) ?? undefined}
                         alt=""
                         className="h-14 w-16 rounded-lg object-cover"
                       />
@@ -275,7 +275,7 @@ function BlogPostRow({ post, categoryName }: { post: BlogPostSummary; categoryNa
     >
       <div className="aspect-[4/3] w-32 shrink-0 overflow-hidden rounded-xl bg-gray-100 sm:w-44">
         {post.coverImage ? (
-          <img src={post.coverImage} alt="" loading="lazy" className="h-full w-full object-cover transition group-hover:scale-105" />
+          <img src={resolveUploadUrl(post.coverImage) ?? undefined} alt="" loading="lazy" className="h-full w-full object-cover transition group-hover:scale-105" />
         ) : (
           <div className="grid h-full w-full place-items-center text-[10px] text-gray-400">No photo yet</div>
         )}
